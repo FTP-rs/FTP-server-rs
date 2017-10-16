@@ -27,8 +27,8 @@ impl AsRef<str> for Command {
             Command::Pwd => "PWD",
             Command::Syst => "SYST",
             Command::Type(_) => "TYPE",
-            Command::Unknown => "UNKN", // doesn't exist
             Command::User(_) => "USER",
+            Command::Unknown => "UNKN", // doesn't exist
         }
     }
 }
