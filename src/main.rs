@@ -6,7 +6,10 @@
  */
 
 extern crate bytes;
+#[macro_use]
+extern crate cfg_if;
 extern crate futures;
+extern crate time;
 extern crate tokio_core;
 extern crate tokio_io;
 
@@ -17,7 +20,7 @@ mod ftp;
 use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::fmt::Display;
-use std::fs::read_dir;
+use std::fs::{read_dir, DirEntry, Metadata};
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Component, PathBuf};
@@ -37,8 +40,52 @@ use codec::{FtpCodec, StringCodec};
 use ftp::{Answer, ResultCode};
 
 const DEFAULT_PORT: u16 = 4321;
+const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 type Writer = SplitSink<Framed<TcpStream, FtpCodec>>;
+
+cfg_if! {
+    if #[cfg(windows)] {
+        fn get_file_size(meta: &Metadata) -> (time::Tm, u64) {
+            use std::os::windows::prelude::*;
+            (time::at(time::Timespec::new(meta.last_write_time())), meta.file_size())
+        }
+    } else {
+        fn get_file_info(meta: &Metadata) -> (time::Tm, u64) {
+            use std::os::unix::prelude::*;
+            (time::at(time::Timespec::new(meta.mtime(), 0)), meta.size())
+        }
+    }
+}
+
+fn add_file_info(entry: DirEntry, out: &mut String) {
+    let path = entry.path(); // TODO: handle error.
+    let extra = if path.is_dir() { "/" } else { "" };
+    let is_dir = if path.is_dir() { "d" } else { "-" };
+
+    let meta = ::std::fs::metadata(&path).unwrap(); // TODO: handle error.
+    let (time, file_size) = get_file_info(&meta);
+    let path = if path.starts_with("./") {
+        path.strip_prefix("./")
+            .unwrap() // TODO: handle error.
+            .to_str()
+            .unwrap() // TODO: handle error.
+    } else {
+        path.to_str().unwrap()
+    };
+    let file_str = format!("{} {} {} {} {}:{} {}{}\r\n",
+                           is_dir,
+                           file_size,
+                           MONTHS[time.tm_mon as usize],
+                           time.tm_mday,
+                           time.tm_hour,
+                           time.tm_min,
+                           path,
+                           extra);
+    out.push_str(&file_str);
+    println!("==> {:?}", &file_str);
+}
 
 #[allow(dead_code)]
 struct Client {
@@ -119,18 +166,7 @@ impl Client {
                 self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to list directory..."));
                 let mut out = String::new();
                 for entry in read_dir(tmp).unwrap() { // TODO: handle error.
-                    let path = entry.unwrap().path();
-                    let extra = if path.is_dir() { "/" } else { "" };
-                    if path.starts_with("./") {
-                        out.push_str(&format!("{}{}\r\n",
-                                              path.strip_prefix("./")
-                                                  .unwrap() // TODO: handle error.
-                                                  .to_str()
-                                                  .unwrap(),
-                                              extra));
-                    } else {
-                        out.push_str(&format!("{}{}\r\n", path.to_str().unwrap(), extra));
-                    }
+                    add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
                 }
                 self.send_data(&out);
                 println!("-> and done!");
@@ -181,7 +217,6 @@ impl Client {
     }
 
     fn send_data(&mut self, data: &str) {
-        // TODO: remove duplication with send().
         if let Some(ref mut writer) = *self.data_writer.borrow_mut() {
             write!(writer, "{}", data).unwrap();
         }
