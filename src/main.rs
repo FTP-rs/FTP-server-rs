@@ -47,7 +47,7 @@ type Writer = SplitSink<Framed<TcpStream, FtpCodec>>;
 
 cfg_if! {
     if #[cfg(windows)] {
-        fn get_file_size(meta: &Metadata) -> (time::Tm, u64) {
+        fn get_file_info(meta: &Metadata) -> (time::Tm, u64) {
             use std::os::windows::prelude::*;
             (time::at(time::Timespec::new(meta.last_write_time())), meta.file_size())
         }
