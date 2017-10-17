@@ -21,12 +21,10 @@ use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs::{read_dir, DirEntry, Metadata};
-use std::io::{self, Write};
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Component, PathBuf};
 use std::rc::Rc;
-use std::net::TcpListener as StdListener;
-use std::net::TcpStream as StdStream;
 
 use futures::{AsyncSink, Future, Sink, Stream};
 use futures::stream::SplitSink;
@@ -43,6 +41,7 @@ const DEFAULT_PORT: u16 = 4321;
 const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+type DataWriter = SplitSink<Framed<TcpStream, StringCodec>>;
 type Writer = SplitSink<Framed<TcpStream, FtpCodec>>;
 
 cfg_if! {
@@ -92,7 +91,7 @@ struct Client {
     address: String,
     cwd: PathBuf,
     data_port: Option<u16>,
-    data_writer: Rc<RefCell<Option<StdStream>>>,
+    data_writer: Rc<RefCell<Option<DataWriter>>>,
     handle: Handle,
     name: Option<String>,
     transfer_type: TransferType,
@@ -168,7 +167,7 @@ impl Client {
                 for entry in read_dir(tmp).unwrap() { // TODO: handle error.
                     add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
                 }
-                self.send_data(&out);
+                self.send_data(out);
                 println!("-> and done!");
             } else {
                 self.send(Answer::new(ResultCode::LocalErrorInProcessing,
@@ -198,27 +197,30 @@ impl Client {
                               &format!("127,0,0,1,{},{}", port >> 8, port & 0xFF)));
 
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
-        let listener = StdListener::bind(&addr).unwrap(); // TODO: handle error
+        let listener = TcpListener::bind(&addr, &self.handle).unwrap(); // TODO: handle error
 
         println!("Waiting clients on port {}...", port);
         let data_writer = self.data_writer.clone();
-        match listener.incoming().next() {
-            Some(Ok(client)) => {
-                *data_writer.borrow_mut() = Some(client);
-            }
-            _ => {
-                println!("[PASV] Error while getting client...");
-            }
-        }
+        let future = listener.incoming()
+            .into_future()
+            .map_err(|_| ())
+            .and_then(move |(client, _rest)| {
+                if let Some((stream, _addr)) = client {
+                    let (writer, _reader) = stream.framed(StringCodec).split();
+                    *data_writer.borrow_mut() = Some(writer);
+                }
+                Ok(())
+            });
+        self.handle.spawn(future);
     }
 
     fn send(&mut self, answer: Answer) {
         send(&mut self.writer, answer);
     }
 
-    fn send_data(&mut self, data: &str) {
+    fn send_data(&mut self, data: String) {
         if let Some(ref mut writer) = *self.data_writer.borrow_mut() {
-            write!(writer, "{}", data).unwrap();
+            send(writer, data);
         }
     }
 }
