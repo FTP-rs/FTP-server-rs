@@ -19,6 +19,7 @@ mod cmd; // FIXME: rename this module.
 mod codec;
 mod ftp;
 
+use std::env;
 use std::ffi::OsStr;
 use std::fs::{read_dir, DirEntry, Metadata};
 use std::io;
@@ -39,7 +40,7 @@ use ftp::{Answer, ResultCode};
 
 const DEFAULT_PORT: u16 = 4321;
 const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 type DataWriter = SplitSink<Framed<TcpStream, StringCodec>>;
 type Writer = SplitSink<Framed<TcpStream, FtpCodec>>;
@@ -65,14 +66,7 @@ fn add_file_info(entry: DirEntry, out: &mut String) {
 
     let meta = ::std::fs::metadata(&path).unwrap(); // TODO: handle error.
     let (time, file_size) = get_file_info(&meta);
-    let path = if path.starts_with("./") {
-        path.strip_prefix("./")
-            .unwrap() // TODO: handle error.
-            .to_str()
-            .unwrap() // TODO: handle error.
-    } else {
-        path.to_str().unwrap()
-    };
+    let path = path.to_str().unwrap().split("/").last().unwrap(); // TODO: handle error.
     let file_str = format!("{} {} {} {} {}:{} {}{}\r\n",
                            is_dir,
                            file_size,
@@ -121,9 +115,34 @@ impl Client {
                 self = await!(self.send(Answer::new(ResultCode::CommandNotImplemented, "Not implemented")))?
             ,
             Command::Cwd(directory) => {
+                let mut directory = PathBuf::from(directory);
+                if !directory.has_root() {
+                    directory = self.cwd.join(directory);
+                }
+                let current = env::current_dir().unwrap(); // TODO: handle error.
+
+                let directory = current.join(if directory.has_root() {
+                    directory.iter().skip(1).collect()
+                } else {
+                    directory
+                });
+                let mut changed = false;
+                if let Ok(dir) = directory.canonicalize() {
+                    if dir.starts_with(&current) { // TODO: handle error.
+                        self.cwd = dir.strip_prefix(&current).unwrap().to_path_buf(); // TODO: handle error.
+                        changed = true;
+                        println!("switched to {:?}", self.cwd);
+                    }
+                }
+                if changed {
+                    self = await!(self.send(Answer::new(ResultCode::Ok,
+                                  &format!("Directory changed to \"{}\"", directory.display()))))?;
+                } else {
+                    self = await!(self.send(Answer::new(ResultCode::FileNotFound,
+                                  "Requested folder doesn't exist")))?;
+                }
                 // TODO: Actually implement the command. Since chroot works only on UNIX
                 // platforms, we can't use it for that. :'(
-                self = await!(self.send(Answer::new(ResultCode::Ok, &format!("Directory changed to \"{}\"", directory))))?;
             },
             Command::List(path) => self = await!(self.list(path))?,
             Command::Pasv => self = await!(self.pasv())?,
@@ -160,28 +179,38 @@ impl Client {
     #[async]
     fn list(mut self, path: Option<PathBuf>) -> Result<Self, ()> {
         if self.data_writer.is_some() {
-            let mut tmp = PathBuf::from(".");
-            {
-                let path = path.as_ref().unwrap_or(&self.cwd);
-                // TODO: would it be better to check if the directory is a child on the root?
-                for item in path.components().skip(1) {
-                    match item {
-                        Component::Normal(ref s) if s != &OsStr::new("..") => tmp.push(s),
-                        _ => {}
+            let ori = path.as_ref().unwrap_or(&self.cwd).to_path_buf();
+            let directory = PathBuf::from(&ori);
+            let current = env::current_dir().unwrap(); // TODO: handle error.
+            let directory = if self.cwd.has_root() {
+                directory.iter().skip(1).collect()
+            } else {
+                directory.clone() // no very beautiful...
+            };
+            let directory = current.join(if directory.has_root() {
+                directory.iter().skip(1).collect()
+            } else {
+                directory
+            });
+            let mut done = false;
+            let dir = directory.canonicalize();
+            println!("===> {:?} {:?} {:?} {:?}", dir, directory, ori, path);
+            if let Ok(dir) = dir {
+                if dir.starts_with(&current) {
+                    self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
+                                                        "Starting to list directory...")))?;
+                    let mut out = String::new();
+                    for entry in read_dir(dir).unwrap() { // TODO: handle error.
+                        add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
                     }
+                    self = await!(self.send_data(out))?;
+                    println!("-> and done!");
+                    done = true;
                 }
             }
-            if tmp.is_dir() {
-                self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to list directory...")))?;
-                let mut out = String::new();
-                for entry in read_dir(tmp).unwrap() { // TODO: handle error.
-                    add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
-                }
-                self = await!(self.send_data(out))?;
-                println!("-> and done!");
-            } else {
+            if !done {
                 self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
-                                      &format!("\"{}\" doesn't exist", tmp.to_str().unwrap()))))?;
+                                      &format!("\"{}\" doesn't exist", ori.to_str().unwrap()))))?;
             }
         } else {
             self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
