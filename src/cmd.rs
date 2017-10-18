@@ -5,7 +5,7 @@ use std::str::{self, FromStr};
 #[derive(Clone, Debug)]
 pub enum Command {
     Auth,
-    Cwd(String),
+    Cwd(String), // TODO: use PathBuf?
     List(Option<PathBuf>),
     Port(u16),
     Pasv,

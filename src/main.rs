@@ -20,11 +20,10 @@ mod codec;
 mod ftp;
 
 use std::env;
-use std::ffi::OsStr;
 use std::fs::{read_dir, DirEntry, Metadata};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 
 use futures::{Sink, Stream};
 use futures::prelude::{async, await};
@@ -114,36 +113,7 @@ impl Client {
                 // TODO: create a macro await_self to avoid this awkward syntax?
                 self = await!(self.send(Answer::new(ResultCode::CommandNotImplemented, "Not implemented")))?
             ,
-            Command::Cwd(directory) => {
-                let mut directory = PathBuf::from(directory);
-                if !directory.has_root() {
-                    directory = self.cwd.join(directory);
-                }
-                let current = env::current_dir().unwrap(); // TODO: handle error.
-
-                let directory = current.join(if directory.has_root() {
-                    directory.iter().skip(1).collect()
-                } else {
-                    directory
-                });
-                let mut changed = false;
-                if let Ok(dir) = directory.canonicalize() {
-                    if dir.starts_with(&current) { // TODO: handle error.
-                        self.cwd = dir.strip_prefix(&current).unwrap().to_path_buf(); // TODO: handle error.
-                        changed = true;
-                        println!("switched to {:?}", self.cwd);
-                    }
-                }
-                if changed {
-                    self = await!(self.send(Answer::new(ResultCode::Ok,
-                                  &format!("Directory changed to \"{}\"", directory.display()))))?;
-                } else {
-                    self = await!(self.send(Answer::new(ResultCode::FileNotFound,
-                                  "Requested folder doesn't exist")))?;
-                }
-                // TODO: Actually implement the command. Since chroot works only on UNIX
-                // platforms, we can't use it for that. :'(
-            },
+            Command::Cwd(directory) => self = await!(self.cwd(directory))?,
             Command::List(path) => self = await!(self.list(path))?,
             Command::Pasv => self = await!(self.pasv())?,
             Command::Port(port) => {
@@ -172,6 +142,37 @@ impl Client {
                     self = await!(self.send(Answer::new(ResultCode::UserloggedIn, &format!("Welcome {}!", content))))?;
                 }
             }
+        }
+        Ok(self)
+    }
+
+    #[async]
+    fn cwd(mut self, directory: String) -> Result<Self, ()> {
+        let mut directory = PathBuf::from(directory);
+        if !directory.has_root() {
+            directory = self.cwd.join(directory);
+        }
+        let current = env::current_dir().unwrap(); // TODO: handle error.
+
+        let directory = current.join(if directory.has_root() {
+            directory.iter().skip(1).collect()
+        } else {
+            directory
+        });
+        let mut changed = false;
+        if let Ok(dir) = directory.canonicalize() {
+            if dir.starts_with(&current) { // TODO: handle error.
+                self.cwd = dir.strip_prefix(&current).unwrap().to_path_buf(); // TODO: handle error.
+                changed = true;
+                println!("switched to {:?}", self.cwd);
+            }
+        }
+        if changed {
+            self = await!(self.send(Answer::new(ResultCode::Ok,
+                                                &format!("Directory changed to \"{}\"", directory.display()))))?;
+        } else {
+            self = await!(self.send(Answer::new(ResultCode::FileNotFound,
+                                                "Requested folder doesn't exist")))?;
         }
         Ok(self)
     }
