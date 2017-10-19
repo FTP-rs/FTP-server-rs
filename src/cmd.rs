@@ -5,11 +5,13 @@ use std::str::{self, FromStr};
 #[derive(Clone, Debug)]
 pub enum Command {
     Auth,
-    Cwd(String),
+    Cwd(String), // TODO: use PathBuf?
     List(Option<PathBuf>),
     Port(u16),
     Pasv,
     Pwd,
+    Quit,
+    Retr(PathBuf),
     Syst,
     Type(TransferType),
     Unknown,
@@ -25,6 +27,8 @@ impl AsRef<str> for Command {
             Command::Pasv => "PASV",
             Command::Port(_) => "PORT",
             Command::Pwd => "PWD",
+            Command::Quit => "QUIT",
+            Command::Retr(_) => "RETR",
             Command::Syst => "SYST",
             Command::Type(_) => "TYPE",
             Command::User(_) => "USER",
@@ -62,6 +66,8 @@ impl Command {
                     Command::Port(port)
                 },
                 b"PWD" => Command::Pwd,
+                b"QUIT" => Command::Quit,
+                b"RETR" => Command::Retr(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
                 b"SYST" => Command::Syst,
                 b"TYPE" => {
                     match TransferType::from(data.unwrap()[0]) { // TODO: handle error.
