@@ -1,7 +1,8 @@
 // Spec found at https://tools.ietf.org/html/rfc959
 
 /*
- * FIXME Filezilla says: Le serveur ne supporte pas les caractères non-ASCII.
+ * FIXME: Filezilla says: Le serveur ne supporte pas les caractères non-ASCII.
+ * FIXME: ftp cli says "WARNING! 71 bare linefeeds received in ASCII mode" when retrieving a file.
  */
 
 #![feature(proc_macro, conservative_impl_trait, generators)]
