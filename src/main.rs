@@ -119,20 +119,20 @@ impl Client {
             Command::Port(port) => {
                 self.data_port = Some(port);
                 self = await!(self.send(Answer::new(ResultCode::Ok, &format!("Data port is now {}", port))))?;
-            },
+            }
             Command::Pwd => {
                 let message = format!("\"/{}\" ", self.cwd.to_str().unwrap());
                 self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated, &message)))?;
-            }, // TODO: handle error.
+            } // TODO: handle error.
             Command::Quit => self = await!(self.quit())?,
             Command::Retr(file) => self = await!(self.retr(file))?,
             Command::Syst => {
                 self = await!(self.send(Answer::new(ResultCode::Ok, "I won't tell!")))?;
-            },
+            }
             Command::Type(typ) => {
                 self.transfer_type = typ;
                 self = await!(self.send(Answer::new(ResultCode::Ok, "Transfer type changed successfully")))?;
-            },
+            }
             Command::Unknown =>
                 self = await!(self.send(Answer::new(ResultCode::UnknownCommand, "Not implemented")))?
             ,
@@ -143,6 +143,17 @@ impl Client {
                     self.name = Some(content.to_owned());
                     self = await!(self.send(Answer::new(ResultCode::UserloggedIn, &format!("Welcome {}!", content))))?;
                 }
+            }
+            Command::CdUp => {
+                let path = if let Some(path) = self.cwd.parent() {
+                    Some(path.to_path_buf())
+                } else {
+                    None
+                };
+                if let Some(path) = path {
+                    self.cwd = path;
+                }
+                self = await!(self.send(Answer::new(ResultCode::Ok, "Done")))?;
             }
         }
         Ok(self)
@@ -155,7 +166,6 @@ impl Client {
             path
         });
         let dir = directory.canonicalize();
-        println!("===> {:?} {:?}", dir, directory);
         if let Ok(ref dir) = dir {
             if !dir.starts_with(&self.server_root) {
                 return Err(io::ErrorKind::PermissionDenied.into());
@@ -166,12 +176,11 @@ impl Client {
 
     #[async]
     fn cwd(mut self, directory: String) -> Result<Self, ()> {
-        let mut directory = PathBuf::from(directory);
+        let directory = PathBuf::from(directory);
         let path = self.cwd.join(&directory);
         let (dir, new_self) = self.complete_path(path).unwrap(); // TODO: handle error.
         self = new_self;
         self.cwd = dir.strip_prefix(&self.server_root).unwrap().to_path_buf(); // TODO: handle error.
-        println!("switched to {:?}", self.cwd);
         self = await!(self.send(Answer::new(ResultCode::Ok,
                                             &format!("Directory changed to \"{}\"", directory.display()))))?;
         Ok(self)
@@ -280,7 +289,7 @@ impl Client {
 
     #[async]
     fn send_data(mut self, data: String) -> Result<Self, ()> {
-        if let Some(mut writer) = self.data_writer {
+        if let Some(writer) = self.data_writer {
             self.data_writer = Some(await!(writer.send(data)).map_err(|_| ())?);
         }
         Ok(self)
