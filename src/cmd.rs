@@ -14,6 +14,7 @@ pub enum Command {
     Retr(PathBuf),
     Syst,
     Type(TransferType),
+    CdUp,
     Unknown,
     User(String),
 }
@@ -32,6 +33,7 @@ impl AsRef<str> for Command {
             Command::Syst => "SYST",
             Command::Type(_) => "TYPE",
             Command::User(_) => "USER",
+            Command::CdUp => "CDUP",
             Command::Unknown => "UNKN", // doesn't exist
         }
     }
@@ -77,6 +79,7 @@ impl Command {
                         },
                     }
                 },
+                b"CDUP" => Command::CdUp,
                 b"USER" => Command::User(data.map(|bytes| String::from_utf8(bytes.to_vec())
                               .expect("cannot convert bytes to String")).unwrap_or_default()), // TODO: handle error.
                 _ => Command::Unknown,
