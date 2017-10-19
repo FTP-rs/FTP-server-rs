@@ -2,7 +2,6 @@
 
 /*
  * FIXME Filezilla says: Le serveur ne supporte pas les caractères non-ASCII.
- * FIXME: The list command should specify which files are directory.
  */
 
 #![feature(proc_macro, conservative_impl_trait, generators)]
@@ -20,8 +19,8 @@ mod codec;
 mod ftp;
 
 use std::env;
-use std::fs::{read_dir, DirEntry, Metadata};
-use std::io;
+use std::fs::{DirEntry, File, Metadata, read_dir};
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
@@ -37,7 +36,6 @@ use cmd::{Command, TransferType};
 use codec::{FtpCodec, StringCodec};
 use ftp::{Answer, ResultCode};
 
-const DEFAULT_PORT: u16 = 4321;
 const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -87,19 +85,21 @@ struct Client {
     data_writer: Option<DataWriter>,
     handle: Handle,
     name: Option<String>,
+    server_root: PathBuf,
     transfer_type: TransferType,
     writer: Writer,
 }
 
 impl Client {
-    fn new(address: String, handle: Handle, writer: Writer) -> Client {
+    fn new(address: String, handle: Handle, writer: Writer, server_root: PathBuf) -> Client {
         Client {
             address,
-            cwd: PathBuf::from("/"),
+            cwd: PathBuf::from(""),
             data_port: None,
             data_writer: None,
             handle,
             name: None,
+            server_root,
             transfer_type: TransferType::Ascii,
             writer,
         }
@@ -110,7 +110,6 @@ impl Client {
         println!("Received command: {:?}", cmd);
         match cmd {
             Command::Auth =>
-                // TODO: create a macro await_self to avoid this awkward syntax?
                 self = await!(self.send(Answer::new(ResultCode::CommandNotImplemented, "Not implemented")))?
             ,
             Command::Cwd(directory) => self = await!(self.cwd(directory))?,
@@ -121,9 +120,11 @@ impl Client {
                 self = await!(self.send(Answer::new(ResultCode::Ok, &format!("Data port is now {}", port))))?;
             },
             Command::Pwd => {
-                let message = format!("\"{}\" ", self.cwd.to_str().unwrap());
+                let message = format!("\"/{}\" ", self.cwd.to_str().unwrap());
                 self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated, &message)))?;
             }, // TODO: handle error.
+            Command::Quit => self = await!(self.quit())?,
+            Command::Retr(file) => self = await!(self.retr(file))?,
             Command::Syst => {
                 self = await!(self.send(Answer::new(ResultCode::Ok, "I won't tell!")))?;
             },
@@ -146,34 +147,32 @@ impl Client {
         Ok(self)
     }
 
+    fn complete_path(self, path: PathBuf) -> Result<(PathBuf, Self), io::Error> {
+        let directory = self.server_root.join(if path.has_root() {
+            path.iter().skip(1).collect()
+        } else {
+            path
+        });
+        let dir = directory.canonicalize();
+        println!("===> {:?} {:?}", dir, directory);
+        if let Ok(ref dir) = dir {
+            if !dir.starts_with(&self.server_root) {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+        }
+        dir.map(|dir| (dir, self))
+    }
+
     #[async]
     fn cwd(mut self, directory: String) -> Result<Self, ()> {
         let mut directory = PathBuf::from(directory);
-        if !directory.has_root() {
-            directory = self.cwd.join(directory);
-        }
-        let current = env::current_dir().unwrap(); // TODO: handle error.
-
-        let directory = current.join(if directory.has_root() {
-            directory.iter().skip(1).collect()
-        } else {
-            directory
-        });
-        let mut changed = false;
-        if let Ok(dir) = directory.canonicalize() {
-            if dir.starts_with(&current) { // TODO: handle error.
-                self.cwd = dir.strip_prefix(&current).unwrap().to_path_buf(); // TODO: handle error.
-                changed = true;
-                println!("switched to {:?}", self.cwd);
-            }
-        }
-        if changed {
-            self = await!(self.send(Answer::new(ResultCode::Ok,
-                                                &format!("Directory changed to \"{}\"", directory.display()))))?;
-        } else {
-            self = await!(self.send(Answer::new(ResultCode::FileNotFound,
-                                                "Requested folder doesn't exist")))?;
-        }
+        let path = self.cwd.join(&directory);
+        let (dir, new_self) = self.complete_path(path).unwrap(); // TODO: handle error.
+        self = new_self;
+        self.cwd = dir.strip_prefix(&self.server_root).unwrap().to_path_buf(); // TODO: handle error.
+        println!("switched to {:?}", self.cwd);
+        self = await!(self.send(Answer::new(ResultCode::Ok,
+                                            &format!("Directory changed to \"{}\"", directory.display()))))?;
         Ok(self)
     }
 
@@ -182,37 +181,16 @@ impl Client {
         if self.data_writer.is_some() {
             let ori = path.as_ref().unwrap_or(&self.cwd).to_path_buf();
             let directory = PathBuf::from(&ori);
-            let current = env::current_dir().unwrap(); // TODO: handle error.
-            let directory = if self.cwd.has_root() {
-                directory.iter().skip(1).collect()
-            } else {
-                directory.clone() // no very beautiful...
-            };
-            let directory = current.join(if directory.has_root() {
-                directory.iter().skip(1).collect()
-            } else {
-                directory
-            });
-            let mut done = false;
-            let dir = directory.canonicalize();
-            println!("===> {:?} {:?} {:?} {:?}", dir, directory, ori, path);
-            if let Ok(dir) = dir {
-                if dir.starts_with(&current) {
-                    self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
-                                                        "Starting to list directory...")))?;
-                    let mut out = String::new();
-                    for entry in read_dir(dir).unwrap() { // TODO: handle error.
-                        add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
-                    }
-                    self = await!(self.send_data(out))?;
-                    println!("-> and done!");
-                    done = true;
-                }
+            let (dir, new_self) = self.complete_path(directory).unwrap(); // TODO: handle error.
+            self = new_self;
+            self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
+                                                "Starting to list directory...")))?;
+            let mut out = String::new();
+            for entry in read_dir(dir).unwrap() { // TODO: handle error.
+                add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
             }
-            if !done {
-                self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
-                                      &format!("\"{}\" doesn't exist", ori.to_str().unwrap()))))?;
-            }
+            self = await!(self.send_data(out))?;
+            println!("-> and done!");
         } else {
             self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
         }
@@ -225,22 +203,23 @@ impl Client {
 
     #[async]
     fn pasv(mut self) -> Result<Self, ()> {
-        // TODO: I believe this command should be blocking.
         let port =
             if let Some(port) = self.data_port {
                 port
             } else {
-                DEFAULT_PORT
+                0
             };
         if self.data_writer.is_some() {
             self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Already listening...")))?;
             return Ok(self);
         }
-        self = await!(self.send(Answer::new(ResultCode::EnteringPassiveMode,
-                              &format!("127,0,0,1,{},{}", port >> 8, port & 0xFF))))?;
 
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
         let listener = TcpListener::bind(&addr, &self.handle).unwrap(); // TODO: handle error
+        let port = listener.local_addr().unwrap().port(); // TODO: handle error.
+
+        self = await!(self.send(Answer::new(ResultCode::EnteringPassiveMode,
+                              &format!("127,0,0,1,{},{}", port >> 8, port & 0xFF))))?;
 
         println!("Waiting clients on port {}...", port);
         // TODO: use into_future() instead of for loop?
@@ -249,6 +228,45 @@ impl Client {
             let (writer, _reader) = stream.framed(StringCodec).split();
             self.data_writer = Some(writer);
             break;
+        }
+        Ok(self)
+    }
+
+    #[async]
+    fn quit(mut self) -> Result<Self, ()> {
+        if self.data_writer.is_some() {
+            unimplemented!();
+        } else {
+            self = await!(self.send(Answer::new(ResultCode::ServiceClosingControlConnection, "Closing connection...")))?;
+            self.writer.close().unwrap(); // TODO: handle error.
+        }
+        Ok(self)
+    }
+
+    #[async]
+    fn retr(mut self, path: PathBuf) -> Result<Self, ()> {
+        // TODO: check if multiple data connection can be opened at the same time.
+        if self.data_writer.is_some() {
+            let path = self.cwd.join(path);
+            let (dir, new_self) = self.complete_path(path).unwrap(); // TODO: handle error.
+            self = new_self;
+            if dir.is_file() {
+                self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
+                let mut file = File::open(dir).unwrap(); // TODO: handle error.
+                let mut out = String::new();
+                file.read_to_string(&mut out).unwrap(); // TODO: handle error.
+                self = await!(self.send_data(out))?;
+                println!("-> file transfer done!");
+            } else {
+                self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
+                                      &format!("\"{}\" doesn't exist", dir.to_str().unwrap()))))?;
+            }
+        } else {
+            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
+        }
+        if self.data_writer.is_some() {
+            self.data_writer = None;
+            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
         }
         Ok(self)
     }
@@ -269,20 +287,21 @@ impl Client {
 }
 
 #[async]
-fn handle_client(stream: TcpStream, handle: Handle, address: String) -> Result<(), ()> {
+fn handle_client(stream: TcpStream, handle: Handle, address: String, server_root: PathBuf) -> Result<(), ()> {
     let (writer, reader) = stream.framed(FtpCodec).split();
     let writer = await!(writer.send(Answer::new(ResultCode::ServiceReadyForNewUser, "Welcome to this FTP server!")))
         .map_err(|_| ())?;
-    let mut client = Client::new(address, handle, writer);
+    let mut client = Client::new(address, handle, writer, server_root);
     #[async]
     for cmd in reader.map_err(|_| ()) {
         client = await!(client.handle_cmd(cmd))?;
     }
+    println!("Client closed");
     Ok(())
 }
 
 #[async]
-fn server(handle: Handle) -> io::Result<()> {
+fn server(handle: Handle, server_root: PathBuf) -> io::Result<()> {
     let port = 1234;
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
     let listener = TcpListener::bind(&addr, &handle).unwrap();
@@ -292,7 +311,7 @@ fn server(handle: Handle) -> io::Result<()> {
     for (stream, addr) in listener.incoming() {
         let address = format!("[address : {}]", addr);
         println!("New client: {}", address);
-        handle.spawn(handle_client(stream, handle.clone(), address));
+        handle.spawn(handle_client(stream, handle.clone(), address, server_root.clone()));
         println!("Waiting another client...");
     }
     Ok(())
@@ -303,6 +322,8 @@ fn main() {
         .expect("Cannot create tokio Core");
     let handle = core.handle();
 
-    core.run(server(handle))
+    let server_root = env::current_dir().unwrap(); // TODO: handle error.
+
+    core.run(server(handle, server_root))
         .expect("Run tokio server");
 }
