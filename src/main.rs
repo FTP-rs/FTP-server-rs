@@ -179,8 +179,8 @@ impl Client {
     #[async]
     fn list(mut self, path: Option<PathBuf>) -> Result<Self, ()> {
         if self.data_writer.is_some() {
-            let ori = path.as_ref().unwrap_or(&self.cwd).to_path_buf();
-            let directory = PathBuf::from(&ori);
+            let path = self.cwd.join(path.unwrap_or_default());
+            let directory = PathBuf::from(&path);
             let (dir, new_self) = self.complete_path(directory).unwrap(); // TODO: handle error.
             self = new_self;
             self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
