@@ -23,7 +23,7 @@ use std::env;
 use std::fs::{DirEntry, File, Metadata, read_dir};
 use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use futures::{Sink, Stream};
 use futures::prelude::{async, await};
@@ -145,12 +145,7 @@ impl Client {
                 }
             }
             Command::CdUp => {
-                let path = if let Some(path) = self.cwd.parent() {
-                    Some(path.to_path_buf())
-                } else {
-                    None
-                };
-                if let Some(path) = path {
+                if let Some(path) = self.cwd.parent().map(Path::to_path_buf) {
                     self.cwd = path;
                 }
                 self = await!(self.send(Answer::new(ResultCode::Ok, "Done")))?;
