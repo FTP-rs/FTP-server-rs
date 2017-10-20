@@ -51,6 +51,7 @@ impl Decoder for StringCodec {
             return Ok(None);
         }
         let data = String::from_utf8(buf.to_vec()).unwrap(); // TODO: handle error.
+        buf.clear();
         Ok(Some(data))
     }
 }
