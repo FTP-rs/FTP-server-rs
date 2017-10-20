@@ -85,7 +85,7 @@ struct Client {
     cwd: PathBuf,
     data_port: Option<u16>,
     data_reader: Option<DataReader>,
-    data_writer: Option<DataWriter>,
+    data_writer: Option<DataWriter>, // TODO: do we really need to split the data socket?
     handle: Handle,
     name: Option<String>,
     server_root: PathBuf,
@@ -238,7 +238,7 @@ impl Client {
         println!("Waiting clients on port {}...", port);
         // TODO: use into_future() instead of for loop?
         #[async]
-        for (stream, _rest) in listener.incoming().map_err(|_| ()) {
+        for (stream, _rest) in listener.incoming().map_err(|_| ()) { // TODO: handle error.
             let (writer, reader) = stream.framed(StringCodec).split();
             self.data_writer = Some(writer);
             self.data_reader = Some(reader);
@@ -316,7 +316,7 @@ impl Client {
         }
         let reader = self.data_reader.take().unwrap();
         #[async]
-        for data in reader.map_err(|_| ()) {
+        for data in reader.map_err(|_| ()) { // TODO: handle error.
             file_data.push_str(&data);
         }
         Ok((file_data, self))
@@ -324,14 +324,14 @@ impl Client {
 
     #[async]
     fn send(mut self, answer: Answer) -> Result<Self, ()> {
-        self.writer = await!(self.writer.send(answer)).map_err(|_| ())?;
+        self.writer = await!(self.writer.send(answer)).map_err(|_| ())?; // TODO: handle error.
         Ok(self)
     }
 
     #[async]
     fn send_data(mut self, data: String) -> Result<Self, ()> {
         if let Some(writer) = self.data_writer {
-            self.data_writer = Some(await!(writer.send(data)).map_err(|_| ())?);
+            self.data_writer = Some(await!(writer.send(data)).map_err(|_| ())?); // TODO: handle error.
         }
         Ok(self)
     }
@@ -341,10 +341,10 @@ impl Client {
 fn handle_client(stream: TcpStream, handle: Handle, address: String, server_root: PathBuf) -> Result<(), ()> {
     let (writer, reader) = stream.framed(FtpCodec).split();
     let writer = await!(writer.send(Answer::new(ResultCode::ServiceReadyForNewUser, "Welcome to this FTP server!")))
-        .map_err(|_| ())?;
+        .map_err(|_| ())?; // TODO: handle error.
     let mut client = Client::new(address, handle, writer, server_root);
     #[async]
-    for cmd in reader.map_err(|_| ()) {
+    for cmd in reader.map_err(|_| ()) { // TODO: handle error.
         client = await!(client.handle_cmd(cmd))?;
     }
     println!("Client closed");
