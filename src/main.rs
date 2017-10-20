@@ -3,6 +3,10 @@
 /*
  * FIXME: Filezilla says: Le serveur ne supporte pas les caractères non-ASCII.
  * FIXME: ftp cli says "WARNING! 71 bare linefeeds received in ASCII mode" when retrieving a file.
+ * TODO: LIST does not send all the data in the right order (FileZilla shows the file size in the
+ * permission column).
+ * FIXME: can't use StringCodec to upload binary file (use Vec<u8> instead for the codec).
+ * TODO: check if can upload/download file bigger than 8Kb.
  */
 
 #![feature(proc_macro, conservative_impl_trait, generators)]
@@ -269,6 +273,7 @@ impl Client {
                 self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
                 let mut file = File::open(path).unwrap(); // TODO: handle error.
                 let mut out = String::new();
+                // TODO: send the file chunck by chunck if it is big (if needed).
                 file.read_to_string(&mut out).unwrap(); // TODO: handle error.
                 self = await!(self.send_data(out))?;
                 println!("-> file transfer done!");
