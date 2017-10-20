@@ -21,13 +21,13 @@ mod ftp;
 
 use std::env;
 use std::fs::{DirEntry, File, Metadata, read_dir};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use futures::{Sink, Stream};
 use futures::prelude::{async, await};
-use futures::stream::SplitSink;
+use futures::stream::{SplitSink, SplitStream};
 use tokio_core::reactor::{Core, Handle};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_io::AsyncRead;
@@ -40,6 +40,7 @@ use ftp::{Answer, ResultCode};
 const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+type DataReader = SplitStream<Framed<TcpStream, StringCodec>>;
 type DataWriter = SplitSink<Framed<TcpStream, StringCodec>>;
 type Writer = SplitSink<Framed<TcpStream, FtpCodec>>;
 
@@ -83,6 +84,7 @@ struct Client {
     address: String, // TODO: remove this?
     cwd: PathBuf,
     data_port: Option<u16>,
+    data_reader: Option<DataReader>,
     data_writer: Option<DataWriter>,
     handle: Handle,
     name: Option<String>,
@@ -97,6 +99,7 @@ impl Client {
             address,
             cwd: PathBuf::from(""),
             data_port: None,
+            data_reader: None,
             data_writer: None,
             handle,
             name: None,
@@ -126,6 +129,7 @@ impl Client {
             } // TODO: handle error.
             Command::Quit => self = await!(self.quit())?,
             Command::Retr(file) => self = await!(self.retr(file))?,
+            Command::Stor(file) => self = await!(self.stor(file))?,
             Command::Syst => {
                 self = await!(self.send(Answer::new(ResultCode::Ok, "I won't tell!")))?;
             }
@@ -152,6 +156,11 @@ impl Client {
             }
         }
         Ok(self)
+    }
+
+    fn close_data_connection(&mut self) {
+        self.data_reader = None;
+        self.data_writer = None;
     }
 
     fn complete_path(self, path: PathBuf) -> Result<(PathBuf, Self), io::Error> {
@@ -200,7 +209,7 @@ impl Client {
             self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
         }
         if self.data_writer.is_some() {
-            self.data_writer = None;
+            self.close_data_connection();
             self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
         }
         Ok(self)
@@ -230,8 +239,9 @@ impl Client {
         // TODO: use into_future() instead of for loop?
         #[async]
         for (stream, _rest) in listener.incoming().map_err(|_| ()) {
-            let (writer, _reader) = stream.framed(StringCodec).split();
+            let (writer, reader) = stream.framed(StringCodec).split();
             self.data_writer = Some(writer);
+            self.data_reader = Some(reader);
             break;
         }
         Ok(self)
@@ -253,27 +263,63 @@ impl Client {
         // TODO: check if multiple data connection can be opened at the same time.
         if self.data_writer.is_some() {
             let path = self.cwd.join(path);
-            let (dir, new_self) = self.complete_path(path).unwrap(); // TODO: handle error.
+            let (path, new_self) = self.complete_path(path).unwrap(); // TODO: handle error.
             self = new_self;
-            if dir.is_file() {
+            if path.is_file() {
                 self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
-                let mut file = File::open(dir).unwrap(); // TODO: handle error.
+                let mut file = File::open(path).unwrap(); // TODO: handle error.
                 let mut out = String::new();
                 file.read_to_string(&mut out).unwrap(); // TODO: handle error.
                 self = await!(self.send_data(out))?;
                 println!("-> file transfer done!");
             } else {
                 self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
-                                      &format!("\"{}\" doesn't exist", dir.to_str().unwrap()))))?;
+                                      &format!("\"{}\" doesn't exist", path.to_str().unwrap()))))?;
             }
         } else {
             self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
         }
         if self.data_writer.is_some() {
-            self.data_writer = None;
+            self.close_data_connection();
             self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
         }
         Ok(self)
+    }
+
+    #[async]
+    fn stor(mut self, path: PathBuf) -> Result<Self, ()> {
+        if self.data_reader.is_some() {
+            let path = self.cwd.join(path);
+            // TODO: check if path contains characters that are not allowed (cannot use
+            // canonicalize for a non-existing path).
+            self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
+            let (data, new_self) = await!(self.receive_data())?;
+            self = new_self;
+            let mut file = File::create(path).unwrap(); // TODO: handle error.
+            write!(file, "{}", data).unwrap(); // TODO: handle error.
+            println!("-> file transfer done!");
+            self.close_data_connection();
+            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
+        } else {
+            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
+        }
+        Ok(self)
+    }
+
+    #[async]
+    fn receive_data(mut self) -> Result<(String, Self), ()> {
+        let mut file_data = String::new();
+        // NOTE: have to use this weird trick because of futures-await.
+        // TODO: fix that when the lifetime stuff is improved for generators.
+        if self.data_reader.is_none() {
+            return Ok((String::new(), self));
+        }
+        let reader = self.data_reader.take().unwrap();
+        #[async]
+        for data in reader.map_err(|_| ()) {
+            file_data.push_str(&data);
+        }
+        Ok((file_data, self))
     }
 
     #[async]

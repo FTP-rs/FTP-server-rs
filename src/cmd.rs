@@ -12,6 +12,7 @@ pub enum Command {
     Pwd,
     Quit,
     Retr(PathBuf),
+    Stor(PathBuf),
     Syst,
     Type(TransferType),
     CdUp,
@@ -30,6 +31,7 @@ impl AsRef<str> for Command {
             Command::Pwd => "PWD",
             Command::Quit => "QUIT",
             Command::Retr(_) => "RETR",
+            Command::Stor(_) => "STOR",
             Command::Syst => "SYST",
             Command::Type(_) => "TYPE",
             Command::User(_) => "USER",
@@ -70,6 +72,7 @@ impl Command {
                 b"PWD" => Command::Pwd,
                 b"QUIT" => Command::Quit,
                 b"RETR" => Command::Retr(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
+                b"STOR" => Command::Stor(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
                 b"SYST" => Command::Syst,
                 b"TYPE" => {
                     match TransferType::from(data.unwrap()[0]) { // TODO: handle error.
