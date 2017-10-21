@@ -25,10 +25,10 @@ mod ftp;
 
 use std::env;
 use std::ffi::OsString;
-use std::fs::{DirEntry, File, Metadata, create_dir, read_dir, remove_dir_all};
+use std::fs::{File, Metadata, create_dir, read_dir, remove_dir_all};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, StripPrefixError};
 
 use futures::{Sink, Stream};
 use futures::prelude::{async, await};
@@ -63,14 +63,23 @@ cfg_if! {
     }
 }
 
-fn add_file_info(entry: DirEntry, out: &mut String) {
-    let path = entry.path(); // TODO: handle error.
+// If an error occurs when we try to get file's information, we just return and don't send its info.
+fn add_file_info(path: PathBuf, out: &mut String) {
     let extra = if path.is_dir() { "/" } else { "" };
     let is_dir = if path.is_dir() { "d" } else { "-" };
 
-    let meta = ::std::fs::metadata(&path).unwrap(); // TODO: handle error.
+    let meta = match ::std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        _ => return,
+    };
     let (time, file_size) = get_file_info(&meta);
-    let path = path.to_str().unwrap().split("/").last().unwrap(); // TODO: handle error.
+    let path = match path.to_str() {
+        Some(path) => match path.split("/").last() {
+            Some(path) => path,
+            _ => return,
+        },
+        _ => return,
+    };
     // TODO: maybe improve how we get rights in here?
     let rights = if meta.permissions().readonly() {
         "r--r--r--"
@@ -137,9 +146,14 @@ impl Client {
                 self = await!(self.send(Answer::new(ResultCode::Ok, &format!("Data port is now {}", port))))?;
             }
             Command::Pwd => {
-                let message = format!("\"/{}\" ", self.cwd.to_str().unwrap());
-                self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated, &message)))?;
-            } // TODO: handle error.
+                let msg = format!("{}", self.cwd.to_str().unwrap_or("")); // small trick
+                if !msg.is_empty() {
+                    let message = format!("\"/{}\" ", msg);
+                    self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated, &message)))?;
+                } else {
+                    self = await!(self.send(Answer::new(ResultCode::FileNotFound, "No such file or directory")))?;
+                }
+            }
             Command::Quit => self = await!(self.quit())?,
             Command::Retr(file) => self = await!(self.retr(file))?,
             Command::Stor(file) => self = await!(self.stor(file))?,
@@ -167,8 +181,9 @@ impl Client {
             Command::Mkd(path) => self = await!(self.mkd(path))?,
             Command::Rmd(path) => self = await!(self.rmd(path))?,
             Command::NoOp => self = await!(self.send(Answer::new(ResultCode::Ok, "Doing nothing")))?,
-            Command::Unknown =>
-                self = await!(self.send(Answer::new(ResultCode::UnknownCommand, "Not implemented")))?
+            Command::Unknown(s) =>
+                self = await!(self.send(Answer::new(ResultCode::UnknownCommand,
+                                                    &format!("\"{}\": Not implemented", s))))?
             ,
         }
         Ok(self)
@@ -248,19 +263,28 @@ impl Client {
         Ok(self)
     }
 
+    fn strip_prefix(self, dir: PathBuf) -> (Self, Result<PathBuf, StripPrefixError>) {
+        let res = dir.strip_prefix(&self.server_root).map(|p| p.to_path_buf());
+        (self, res)
+    }
+
     #[async]
     fn cwd(mut self, directory: PathBuf) -> Result<Self, ()> {
         let path = self.cwd.join(&directory);
         let (new_self, res) = self.complete_path(path);
         self = new_self;
         if let Ok(dir) = res {
-            self.cwd = dir.strip_prefix(&self.server_root).unwrap().to_path_buf(); // TODO: handle error.
-            self = await!(self.send(Answer::new(ResultCode::Ok,
-                                                &format!("Directory changed to \"{}\"", directory.display()))))?;
-        } else {
-            self = await!(self.send(Answer::new(ResultCode::FileNotFound,
-                                                "No such file or directory")))?;
+            let (new_self, res) = self.strip_prefix(dir);
+            self = new_self;
+            if let Ok(prefix) = res {
+                self.cwd = prefix.to_path_buf();
+                self = await!(self.send(Answer::new(ResultCode::Ok,
+                                                    &format!("Directory changed to \"{}\"", directory.display()))))?;
+                return Ok(self)
+            }
         }
+        self = await!(self.send(Answer::new(ResultCode::FileNotFound,
+                                            "No such file or directory")))?;
         Ok(self)
     }
 
@@ -271,12 +295,24 @@ impl Client {
             let directory = PathBuf::from(&path);
             let (new_self, res) = self.complete_path(directory);
             self = new_self;
-            if let Ok(dir) = res {
+            if let Ok(path) = res {
                 self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
                                                     "Starting to list directory...")))?;
                 let mut out = String::new();
-                for entry in read_dir(dir).unwrap() { // TODO: handle error.
-                    add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
+                if path.is_dir() {
+                    if let Ok(dir) = read_dir(path) {
+                        for entry in dir {
+                            if let Ok(entry) = entry {
+                                add_file_info(entry.path(), &mut out);
+                            }
+                        }
+                    } else {
+                        self = await!(self.send(Answer::new(ResultCode::InvalidParameterOrArgument,
+                                                            "No such file or directory")))?;
+                        return Ok(self);
+                    }
+                } else {
+                    add_file_info(path, &mut out);
                 }
                 self = await!(self.send_data(out))?;
                 println!("-> and done!");
@@ -454,12 +490,13 @@ fn server(handle: Handle, server_root: PathBuf) -> io::Result<()> {
 }
 
 fn main() {
-    let mut core = Core::new()
-        .expect("Cannot create tokio Core");
+    let mut core = Core::new().expect("Cannot create tokio Core");
     let handle = core.handle();
 
-    let server_root = env::current_dir().unwrap(); // TODO: handle error.
-
-    core.run(server(handle, server_root))
-        .expect("Run tokio server");
+    match env::current_dir() {
+        Ok(server_root) => {
+            core.run(server(handle, server_root)).expect("Run tokio server");
+        }
+        Err(e) => println!("Couldn't start server: {:?}", e),
+    }
 }

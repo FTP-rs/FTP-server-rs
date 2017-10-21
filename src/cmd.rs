@@ -19,7 +19,7 @@ pub enum Command {
     Syst,
     Type(TransferType),
     CdUp,
-    Unknown,
+    Unknown(String),
     User(String),
 }
 
@@ -42,7 +42,7 @@ impl AsRef<str> for Command {
             Command::Mkd(_) => "MKD",
             Command::Rmd(_) => "RMD",
             Command::NoOp => "NOOP",
-            Command::Unknown => "UNKN", // doesn't exist
+            Command::Unknown(_) => "UNKN", // doesn't exist
         }
     }
 }
@@ -93,7 +93,7 @@ impl Command {
                 b"USER" => Command::User(data.map(|bytes| String::from_utf8(bytes.to_vec())
                               .expect("cannot convert bytes to String")).unwrap_or_default()), // TODO: handle error.
                 b"NOOP" => Command::NoOp,
-                _ => Command::Unknown,
+                s => Command::Unknown(str::from_utf8(s).unwrap_or("").to_owned()),
             };
         Ok(command)
     }
