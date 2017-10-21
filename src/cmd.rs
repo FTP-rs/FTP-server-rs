@@ -5,8 +5,9 @@ use std::str::{self, FromStr};
 #[derive(Clone, Debug)]
 pub enum Command {
     Auth,
-    Cwd(String), // TODO: use PathBuf?
+    Cwd(PathBuf), // TODO: use PathBuf?
     List(Option<PathBuf>),
+    Mkd(PathBuf),
     Port(u16),
     Pasv,
     Pwd,
@@ -36,6 +37,7 @@ impl AsRef<str> for Command {
             Command::Type(_) => "TYPE",
             Command::User(_) => "USER",
             Command::CdUp => "CDUP",
+            Command::Mkd(_) => "MKD",
             Command::Unknown => "UNKN", // doesn't exist
         }
     }
@@ -50,8 +52,7 @@ impl Command {
         let command =
             match command.as_slice() {
                 b"AUTH" => Command::Auth,
-                b"CWD" => Command::Cwd(data.map(|bytes| String::from_utf8(bytes.to_vec())
-                              .expect("cannot convert bytes to String")).unwrap_or_default()), // TODO: handle error.
+                b"CWD" => Command::Cwd(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
                 b"LIST" => Command::List(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf())), // TODO: handle error.
                 b"PASV" => Command::Pasv,
                 b"PORT" => {
@@ -64,8 +65,8 @@ impl Command {
 
                     let port = (addr[4] as u16) << 8 | (addr[5] as u16);
                     // TODO: check if the port isn't already used already by another connection...
-                    if port <= 1000 { // TODO: isn't it 1024?
-                        panic!("Port can't be less than 1001"); // TODO: handle error.
+                    if port <= 1024 {
+                        panic!("Port can't be less than 10025"); // TODO: handle error.
                     }
                     Command::Port(port)
                 },
@@ -83,6 +84,7 @@ impl Command {
                     }
                 },
                 b"CDUP" => Command::CdUp,
+                b"MKD" => Command::Mkd(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
                 b"USER" => Command::User(data.map(|bytes| String::from_utf8(bytes.to_vec())
                               .expect("cannot convert bytes to String")).unwrap_or_default()), // TODO: handle error.
                 _ => Command::Unknown,
