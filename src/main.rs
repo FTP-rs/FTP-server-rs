@@ -70,26 +70,35 @@ fn add_file_info(entry: DirEntry, out: &mut String) {
     let meta = ::std::fs::metadata(&path).unwrap(); // TODO: handle error.
     let (time, file_size) = get_file_info(&meta);
     let path = path.to_str().unwrap().split("/").last().unwrap(); // TODO: handle error.
-    let file_str = format!("{} {} {} {} {}:{} {}{}\r\n",
-                           is_dir,
-                           file_size,
-                           MONTHS[time.tm_mon as usize],
-                           time.tm_mday,
-                           time.tm_hour,
-                           time.tm_min,
-                           path,
-                           extra);
+    // TODO: maybe improve how we get rights in here?
+    let rights = if meta.permissions().readonly() {
+        "r--r--r--"
+    } else {
+        "rw-rw-rw-"
+    };
+    let file_str = format!("{is_dir}{rights} {links} {owner} {group} {size} {month} {day} {hour}:{min} {path}{extra}\r\n",
+                           is_dir=is_dir,
+                           rights=rights,
+                           links=1, // number of links
+                           owner="anonymous", // owner name
+                           group="anonymous", // group name
+                           size=file_size,
+                           month=MONTHS[time.tm_mon as usize],
+                           day=time.tm_mday,
+                           hour=time.tm_hour,
+                           min=time.tm_min,
+                           path=path,
+                           extra=extra);
     out.push_str(&file_str);
     println!("==> {:?}", &file_str);
 }
 
 #[allow(dead_code)]
 struct Client {
-    address: String, // TODO: remove this?
     cwd: PathBuf,
     data_port: Option<u16>,
     data_reader: Option<DataReader>,
-    data_writer: Option<DataWriter>, // TODO: do we really need to split the data socket?
+    data_writer: Option<DataWriter>, // TODO: do we really need to split the data socket? => NOPE
     handle: Handle,
     name: Option<String>,
     server_root: PathBuf,
@@ -98,9 +107,8 @@ struct Client {
 }
 
 impl Client {
-    fn new(address: String, handle: Handle, writer: Writer, server_root: PathBuf) -> Client {
+    fn new(handle: Handle, writer: Writer, server_root: PathBuf) -> Client {
         Client {
-            address,
             cwd: PathBuf::from(""),
             data_port: None,
             data_reader: None,
@@ -343,11 +351,11 @@ impl Client {
 }
 
 #[async]
-fn handle_client(stream: TcpStream, handle: Handle, address: String, server_root: PathBuf) -> Result<(), ()> {
+fn handle_client(stream: TcpStream, handle: Handle, server_root: PathBuf) -> Result<(), ()> {
     let (writer, reader) = stream.framed(FtpCodec).split();
     let writer = await!(writer.send(Answer::new(ResultCode::ServiceReadyForNewUser, "Welcome to this FTP server!")))
         .map_err(|_| ())?; // TODO: handle error.
-    let mut client = Client::new(address, handle, writer, server_root);
+    let mut client = Client::new(handle, writer, server_root);
     #[async]
     for cmd in reader.map_err(|_| ()) { // TODO: handle error.
         client = await!(client.handle_cmd(cmd))?;
@@ -367,7 +375,7 @@ fn server(handle: Handle, server_root: PathBuf) -> io::Result<()> {
     for (stream, addr) in listener.incoming() {
         let address = format!("[address : {}]", addr);
         println!("New client: {}", address);
-        handle.spawn(handle_client(stream, handle.clone(), address, server_root.clone()));
+        handle.spawn(handle_client(stream, handle.clone(), server_root.clone()));
         println!("Waiting another client...");
     }
     Ok(())
