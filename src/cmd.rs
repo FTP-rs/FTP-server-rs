@@ -8,6 +8,7 @@ pub enum Command {
     Cwd(PathBuf), // TODO: use PathBuf?
     List(Option<PathBuf>),
     Mkd(PathBuf),
+    NoOp,
     Port(u16),
     Pasv,
     Pwd,
@@ -40,6 +41,7 @@ impl AsRef<str> for Command {
             Command::CdUp => "CDUP",
             Command::Mkd(_) => "MKD",
             Command::Rmd(_) => "RMD",
+            Command::NoOp => "NOOP",
             Command::Unknown => "UNKN", // doesn't exist
         }
     }
@@ -90,6 +92,7 @@ impl Command {
                 b"RMD" => Command::Rmd(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
                 b"USER" => Command::User(data.map(|bytes| String::from_utf8(bytes.to_vec())
                               .expect("cannot convert bytes to String")).unwrap_or_default()), // TODO: handle error.
+                b"NOOP" => Command::NoOp,
                 _ => Command::Unknown,
             };
         Ok(command)
