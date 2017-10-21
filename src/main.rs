@@ -25,7 +25,7 @@ mod ftp;
 
 use std::env;
 use std::ffi::OsString;
-use std::fs::{DirEntry, File, Metadata, read_dir, create_dir};
+use std::fs::{DirEntry, File, Metadata, create_dir, read_dir, remove_dir_all};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -168,6 +168,7 @@ impl Client {
                 self = await!(self.send(Answer::new(ResultCode::Ok, "Done")))?;
             }
             Command::Mkd(path) => self = await!(self.mkd(path))?,
+            Command::Rmd(path) => self = await!(self.rmd(path))?,
         }
         Ok(self)
     }
@@ -215,10 +216,10 @@ impl Client {
                     self = new_self;
                     if let Some(filename) = filename {
                         dir.push(filename);
-                        if let Ok(_) = create_dir(dir) {
+                        if create_dir(dir).is_ok() {
                             self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated,
                                                                 "Folder successfully created!")))?;
-                            return Ok(self)
+                            return Ok(self);
                         }
                     }
                 }
@@ -226,6 +227,23 @@ impl Client {
         }
         self = await!(self.send(Answer::new(ResultCode::FileNotFound,
                                             "Couldn't create folder")))?;
+        Ok(self)
+    }
+
+    #[async]
+    fn rmd(mut self, directory: PathBuf) -> Result<Self, ()> {
+        let path = self.cwd.join(&directory);
+        let (new_self, res) = self.complete_path(path);
+        self = new_self;
+        if let Ok(dir) = res {
+            if remove_dir_all(dir).is_ok() {
+                self = await!(self.send(Answer::new(ResultCode::RequestedFileActionOkay,
+                                                    "Folder successfully removed")))?;
+                return Ok(self);
+            }
+        }
+        self = await!(self.send(Answer::new(ResultCode::FileNotFound,
+                                            "Couldn't remove folder")))?;
         Ok(self)
     }
 
