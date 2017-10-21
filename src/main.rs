@@ -150,9 +150,6 @@ impl Client {
                 self.transfer_type = typ;
                 self = await!(self.send(Answer::new(ResultCode::Ok, "Transfer type changed successfully")))?;
             }
-            Command::Unknown =>
-                self = await!(self.send(Answer::new(ResultCode::UnknownCommand, "Not implemented")))?
-            ,
             Command::User(content) => {
                 if content.is_empty() {
                     self = await!(self.send(Answer::new(ResultCode::InvalidParameterOrArgument, "Invalid username")))?;
@@ -169,6 +166,10 @@ impl Client {
             }
             Command::Mkd(path) => self = await!(self.mkd(path))?,
             Command::Rmd(path) => self = await!(self.rmd(path))?,
+            Command::NoOp => self = await!(self.send(Answer::new(ResultCode::Ok, "Doing nothing")))?,
+            Command::Unknown =>
+                self = await!(self.send(Answer::new(ResultCode::UnknownCommand, "Not implemented")))?
+            ,
         }
         Ok(self)
     }
