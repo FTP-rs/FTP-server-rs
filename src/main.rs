@@ -24,7 +24,8 @@ mod codec;
 mod ftp;
 
 use std::env;
-use std::fs::{DirEntry, File, Metadata, read_dir};
+use std::ffi::OsString;
+use std::fs::{DirEntry, File, Metadata, read_dir, create_dir};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -166,6 +167,7 @@ impl Client {
                 }
                 self = await!(self.send(Answer::new(ResultCode::Ok, "Done")))?;
             }
+            Command::Mkd(path) => self = await!(self.mkd(path))?,
         }
         Ok(self)
     }
@@ -175,7 +177,7 @@ impl Client {
         self.data_writer = None;
     }
 
-    fn complete_path(self, path: PathBuf) -> Result<(PathBuf, Self), io::Error> {
+    fn complete_path(self, path: PathBuf) -> (Self, Result<PathBuf, io::Error>) {
         let directory = self.server_root.join(if path.has_root() {
             path.iter().skip(1).collect()
         } else {
@@ -184,21 +186,62 @@ impl Client {
         let dir = directory.canonicalize();
         if let Ok(ref dir) = dir {
             if !dir.starts_with(&self.server_root) {
-                return Err(io::ErrorKind::PermissionDenied.into());
+                return (self, Err(io::ErrorKind::PermissionDenied.into()));
             }
         }
-        dir.map(|dir| (dir, self))
+        (self, dir)
+    }
+
+    fn get_parent(self, path: PathBuf) -> (Self, Option<PathBuf>) {
+        (self, path.parent().map(|p| p.to_path_buf()))
+    }
+
+    fn get_filename(self, path: PathBuf) -> (Self, Option<OsString>) {
+        (self, path.file_name().map(|p| p.to_os_string()))
     }
 
     #[async]
-    fn cwd(mut self, directory: String) -> Result<Self, ()> {
-        let directory = PathBuf::from(directory);
-        let path = self.cwd.join(&directory);
-        let (dir, new_self) = self.complete_path(path).unwrap(); // TODO: handle error.
+    fn mkd(mut self, path: PathBuf) -> Result<Self, ()> {
+        let path = self.cwd.join(&path);
+        let (new_self, parent) = self.get_parent(path.clone());
         self = new_self;
-        self.cwd = dir.strip_prefix(&self.server_root).unwrap().to_path_buf(); // TODO: handle error.
-        self = await!(self.send(Answer::new(ResultCode::Ok,
-                                            &format!("Directory changed to \"{}\"", directory.display()))))?;
+        if let Some(parent) = parent {
+            let parent = parent.to_path_buf();
+            let (new_self, res) = self.complete_path(parent);
+            self = new_self;
+            if let Ok(mut dir) = res {
+                if dir.is_dir() {
+                    let (new_self, filename) = self.get_filename(path);
+                    self = new_self;
+                    if let Some(filename) = filename {
+                        dir.push(filename);
+                        if let Ok(_) = create_dir(dir) {
+                            self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated,
+                                                                "Folder successfully created!")))?;
+                            return Ok(self)
+                        }
+                    }
+                }
+            }
+        }
+        self = await!(self.send(Answer::new(ResultCode::FileNotFound,
+                                            "Couldn't create folder")))?;
+        Ok(self)
+    }
+
+    #[async]
+    fn cwd(mut self, directory: PathBuf) -> Result<Self, ()> {
+        let path = self.cwd.join(&directory);
+        let (new_self, res) = self.complete_path(path);
+        self = new_self;
+        if let Ok(dir) = res {
+            self.cwd = dir.strip_prefix(&self.server_root).unwrap().to_path_buf(); // TODO: handle error.
+            self = await!(self.send(Answer::new(ResultCode::Ok,
+                                                &format!("Directory changed to \"{}\"", directory.display()))))?;
+        } else {
+            self = await!(self.send(Answer::new(ResultCode::FileNotFound,
+                                                "No such file or directory")))?;
+        }
         Ok(self)
     }
 
@@ -207,16 +250,21 @@ impl Client {
         if self.data_writer.is_some() {
             let path = self.cwd.join(path.unwrap_or_default());
             let directory = PathBuf::from(&path);
-            let (dir, new_self) = self.complete_path(directory).unwrap(); // TODO: handle error.
+            let (new_self, res) = self.complete_path(directory);
             self = new_self;
-            self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
-                                                "Starting to list directory...")))?;
-            let mut out = String::new();
-            for entry in read_dir(dir).unwrap() { // TODO: handle error.
-                add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
+            if let Ok(dir) = res {
+                self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
+                                                    "Starting to list directory...")))?;
+                let mut out = String::new();
+                for entry in read_dir(dir).unwrap() { // TODO: handle error.
+                    add_file_info(entry.unwrap(), &mut out); // TODO: handle error.
+                }
+                self = await!(self.send_data(out))?;
+                println!("-> and done!");
+            } else {
+                self = await!(self.send(Answer::new(ResultCode::InvalidParameterOrArgument,
+                                                    "No such file or directory")))?;
             }
-            self = await!(self.send_data(out))?;
-            println!("-> and done!");
         } else {
             self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
         }
@@ -275,16 +323,21 @@ impl Client {
         // TODO: check if multiple data connection can be opened at the same time.
         if self.data_writer.is_some() {
             let path = self.cwd.join(path);
-            let (path, new_self) = self.complete_path(path).unwrap(); // TODO: handle error.
+            let (new_self, res) = self.complete_path(path.clone()); // TODO: ugly clone
             self = new_self;
-            if path.is_file() {
-                self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
-                let mut file = File::open(path).unwrap(); // TODO: handle error.
-                let mut out = String::new();
-                // TODO: send the file chunck by chunck if it is big (if needed).
-                file.read_to_string(&mut out).unwrap(); // TODO: handle error.
-                self = await!(self.send_data(out))?;
-                println!("-> file transfer done!");
+            if let Ok(path) = res {
+                if path.is_file() {
+                    self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
+                    let mut file = File::open(path).unwrap(); // TODO: handle error.
+                    let mut out = String::new();
+                    // TODO: send the file chunck by chunck if it is big (if needed).
+                    file.read_to_string(&mut out).unwrap(); // TODO: handle error.
+                    self = await!(self.send_data(out))?;
+                    println!("-> file transfer done!");
+                } else {
+                    self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
+                                          &format!("\"{}\" doesn't exist", path.to_str().unwrap()))))?;
+                }
             } else {
                 self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
                                       &format!("\"{}\" doesn't exist", path.to_str().unwrap()))))?;
