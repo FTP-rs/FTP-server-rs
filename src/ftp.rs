@@ -56,4 +56,3 @@ pub enum ResultCode {
     ExceededStorageAllocation = 552,
     FileNameNotAllowed = 553,
 }
-
