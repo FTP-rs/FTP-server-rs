@@ -6,8 +6,8 @@ use tokio_io::codec::{Decoder, Encoder};
 use cmd::Command;
 use ftp::Answer;
 
+pub struct BytesCodec;
 pub struct FtpCodec;
-pub struct StringCodec;
 
 impl Decoder for FtpCodec {
     type Item = Command;
@@ -42,26 +42,26 @@ impl Encoder for FtpCodec {
     }
 }
 
-impl Decoder for StringCodec {
-    type Item = String;
+impl Decoder for BytesCodec {
+    type Item = Vec<u8>;
     type Error = io::Error;
 
-    fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<String>> {
+    fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<Vec<u8>>> {
         if buf.len() == 0 {
             return Ok(None);
         }
-        let data = String::from_utf8(buf.to_vec()).unwrap(); // TODO: handle error.
+        let data = buf.to_vec();
         buf.clear();
         Ok(Some(data))
     }
 }
 
-impl Encoder for StringCodec {
-    type Item = String; // TODO: use &[u8] instead?
+impl Encoder for BytesCodec {
+    type Item = Vec<u8>;
     type Error = io::Error;
 
-    fn encode(&mut self, data: String, buf: &mut BytesMut) -> io::Result<()> {
-        buf.extend(data.as_bytes());
+    fn encode(&mut self, data: Vec<u8>, buf: &mut BytesMut) -> io::Result<()> {
+        buf.extend(data);
         Ok(())
     }
 }

@@ -5,8 +5,6 @@
  * FIXME: ftp cli says "WARNING! 71 bare linefeeds received in ASCII mode" when retrieving a file.
  * TODO: LIST does not send all the data in the right order (FileZilla shows the file size in the
  * permission column).
- * FIXME: can't use StringCodec to upload binary file (use Vec<u8> instead for the codec).
- * TODO: check if can upload/download file bigger than 8Kb.
  */
 
 #![feature(proc_macro, conservative_impl_trait, generators)]
@@ -39,14 +37,14 @@ use tokio_io::AsyncRead;
 use tokio_io::codec::Framed;
 
 use cmd::{Command, TransferType};
-use codec::{FtpCodec, StringCodec};
+use codec::{BytesCodec, FtpCodec};
 use ftp::{Answer, ResultCode};
 
 const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-type DataReader = SplitStream<Framed<TcpStream, StringCodec>>;
-type DataWriter = SplitSink<Framed<TcpStream, StringCodec>>;
+type DataReader = SplitStream<Framed<TcpStream, BytesCodec>>;
+type DataWriter = SplitSink<Framed<TcpStream, BytesCodec>>;
 type Writer = SplitSink<Framed<TcpStream, FtpCodec>>;
 
 cfg_if! {
@@ -64,7 +62,7 @@ cfg_if! {
 }
 
 // If an error occurs when we try to get file's information, we just return and don't send its info.
-fn add_file_info(path: PathBuf, out: &mut String) {
+fn add_file_info(path: PathBuf, out: &mut Vec<u8>) {
     let extra = if path.is_dir() { "/" } else { "" };
     let is_dir = if path.is_dir() { "d" } else { "-" };
 
@@ -99,7 +97,7 @@ fn add_file_info(path: PathBuf, out: &mut String) {
                            min=time.tm_min,
                            path=path,
                            extra=extra);
-    out.push_str(&file_str);
+    out.extend(file_str.as_bytes());
     println!("==> {:?}", &file_str);
 }
 
@@ -119,7 +117,7 @@ struct Client {
 impl Client {
     fn new(handle: Handle, writer: Writer, server_root: PathBuf) -> Client {
         Client {
-            cwd: PathBuf::from(""),
+            cwd: PathBuf::from("/"),
             data_port: None,
             data_reader: None,
             data_writer: None,
@@ -298,7 +296,7 @@ impl Client {
             if let Ok(path) = res {
                 self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
                                                     "Starting to list directory...")))?;
-                let mut out = String::new();
+                let mut out = vec![];
                 if path.is_dir() {
                     if let Ok(dir) = read_dir(path) {
                         for entry in dir {
@@ -354,7 +352,7 @@ impl Client {
         // TODO: use into_future() instead of for loop?
         #[async]
         for (stream, _rest) in listener.incoming().map_err(|_| ()) { // TODO: handle error.
-            let (writer, reader) = stream.framed(StringCodec).split();
+            let (writer, reader) = stream.framed(BytesCodec).split();
             self.data_writer = Some(writer);
             self.data_reader = Some(reader);
             break;
@@ -384,9 +382,9 @@ impl Client {
                 if path.is_file() {
                     self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
                     let mut file = File::open(path).unwrap(); // TODO: handle error.
-                    let mut out = String::new();
+                    let mut out = vec![];
                     // TODO: send the file chunck by chunck if it is big (if needed).
-                    file.read_to_string(&mut out).unwrap(); // TODO: handle error.
+                    file.read_to_end(&mut out).unwrap(); // TODO: handle error.
                     self = await!(self.send_data(out))?;
                     println!("-> file transfer done!");
                 } else {
@@ -417,7 +415,7 @@ impl Client {
             let (data, new_self) = await!(self.receive_data())?;
             self = new_self;
             let mut file = File::create(path).unwrap(); // TODO: handle error.
-            write!(file, "{}", data).unwrap(); // TODO: handle error.
+            file.write_all(&data).unwrap(); // TODO: handle error.
             println!("-> file transfer done!");
             self.close_data_connection();
             self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
@@ -428,17 +426,17 @@ impl Client {
     }
 
     #[async]
-    fn receive_data(mut self) -> Result<(String, Self), ()> {
-        let mut file_data = String::new();
+    fn receive_data(mut self) -> Result<(Vec<u8>, Self), ()> {
+        let mut file_data = vec![];
         // NOTE: have to use this weird trick because of futures-await.
         // TODO: fix that when the lifetime stuff is improved for generators.
         if self.data_reader.is_none() {
-            return Ok((String::new(), self));
+            return Ok((vec![], self));
         }
         let reader = self.data_reader.take().unwrap();
         #[async]
         for data in reader.map_err(|_| ()) { // TODO: handle error.
-            file_data.push_str(&data);
+            file_data.extend(&data);
         }
         Ok((file_data, self))
     }
@@ -450,7 +448,7 @@ impl Client {
     }
 
     #[async]
-    fn send_data(mut self, data: String) -> Result<Self, ()> {
+    fn send_data(mut self, data: Vec<u8>) -> Result<Self, ()> {
         if let Some(writer) = self.data_writer {
             self.data_writer = Some(await!(writer.send(data)).map_err(|_| ())?); // TODO: handle error.
         }
