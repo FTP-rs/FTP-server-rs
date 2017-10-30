@@ -4,6 +4,7 @@ use bytes::BytesMut;
 use tokio_io::codec::{Decoder, Encoder};
 
 use cmd::Command;
+use error::Error;
 use ftp::Answer;
 
 pub struct BytesCodec;
@@ -19,6 +20,7 @@ impl Decoder for FtpCodec {
             buf.split_to(2); // Remove \r\n.
             Command::new(line.to_vec())
                 .map(|command| Some(command))
+                .map_err(Error::to_io_error)
         } else {
             Ok(None)
         }

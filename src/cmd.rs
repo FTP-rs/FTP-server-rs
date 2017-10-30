@@ -1,11 +1,12 @@
-use std::io;
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
+
+use error::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub enum Command {
     Auth,
-    Cwd(PathBuf), // TODO: use PathBuf?
+    Cwd(PathBuf),
     List(Option<PathBuf>),
     Mkd(PathBuf),
     NoOp,
@@ -48,50 +49,50 @@ impl AsRef<str> for Command {
 }
 
 impl Command {
-    pub fn new(input: Vec<u8>) -> io::Result<Self> {
+    pub fn new(input: Vec<u8>) -> Result<Self> {
         let mut iter = input.split(|&byte| byte == b' ');
-        let mut command = iter.next().expect("command in input").to_vec(); // TODO: handle error.
+        let mut command = iter.next().ok_or_else(|| Error::Msg("empty command".to_string()))?.to_vec();
         to_uppercase(&mut command);
-        let data = iter.next();
+        let data = iter.next().ok_or_else(|| Error::Msg("no command parameter".to_string()));
         let command =
             match command.as_slice() {
                 b"AUTH" => Command::Auth,
-                b"CWD" => Command::Cwd(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
-                b"LIST" => Command::List(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf())), // TODO: handle error.
+                b"CWD" => Command::Cwd(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
+                b"LIST" => Command::List(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf())).ok()),
                 b"PASV" => Command::Pasv,
                 b"PORT" => {
-                    let addr = data.unwrap().split(|&byte| byte == b',') // TODO: handle error.
-                        .filter_map(|bytes| u8::from_str(str::from_utf8(bytes).unwrap()).ok()) // TODO: handle error.
+                    let addr = data?.split(|&byte| byte == b',')
+                        .filter_map(|bytes| str::from_utf8(bytes).ok()
+                                    .and_then(|string| u8::from_str(string).ok()))
                         .collect::<Vec<u8>>();
                     if addr.len() != 6 {
-                        panic!("Invalid address/port"); // TODO. handle error.
+                        return Err("Invalid address/port".into());
                     }
 
                     let port = (addr[4] as u16) << 8 | (addr[5] as u16);
                     // TODO: check if the port isn't already used already by another connection...
                     if port <= 1024 {
-                        panic!("Port can't be less than 10025"); // TODO: handle error.
+                        return Err("Port can't be less than 10025".into());
                     }
                     Command::Port(port)
                 },
                 b"PWD" => Command::Pwd,
                 b"QUIT" => Command::Quit,
-                b"RETR" => Command::Retr(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
-                b"STOR" => Command::Stor(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
+                b"RETR" => Command::Retr(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
+                b"STOR" => Command::Stor(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
                 b"SYST" => Command::Syst,
                 b"TYPE" => {
-                    match TransferType::from(data.unwrap()[0]) { // TODO: handle error.
-                        TransferType::Unknown => panic!("command not implemented for that parameter"), // TODO: handle error.
+                    match TransferType::from(data?[0]) {
+                        TransferType::Unknown => return Err("command not implemented for that parameter".into()),
                         typ => {
                             Command::Type(typ)
                         },
                     }
                 },
                 b"CDUP" => Command::CdUp,
-                b"MKD" => Command::Mkd(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
-                b"RMD" => Command::Rmd(data.map(|bytes| Path::new(str::from_utf8(bytes).unwrap()).to_path_buf()).unwrap()), // TODO: handle error.
-                b"USER" => Command::User(data.map(|bytes| String::from_utf8(bytes.to_vec())
-                              .expect("cannot convert bytes to String")).unwrap_or_default()), // TODO: handle error.
+                b"MKD" => Command::Mkd(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
+                b"RMD" => Command::Rmd(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
+                b"USER" => Command::User(data.and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(Into::into))?),
                 b"NOOP" => Command::NoOp,
                 s => Command::Unknown(str::from_utf8(s).unwrap_or("").to_owned()),
             };
