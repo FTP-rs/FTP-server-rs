@@ -27,7 +27,7 @@ use std::ffi::OsString;
 use std::fs::{File, Metadata, create_dir, read_dir, remove_dir_all};
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf, StripPrefixError};
+use std::path::{Component, Path, PathBuf, StripPrefixError};
 use std::result;
 
 use futures::{Sink, Stream};
@@ -413,9 +413,11 @@ impl Client {
     #[async]
     fn stor(mut self, path: PathBuf) -> Result<Self> {
         if self.data_reader.is_some() {
+            if invalid_path(&path) {
+                let error: io::Error = io::ErrorKind::PermissionDenied.into();
+                return Err(error.into());
+            }
             let path = self.cwd.join(path);
-            // TODO: check if path contains characters that are not allowed (cannot use
-            // canonicalize for a non-existing path).
             self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
             let (data, new_self) = await!(self.receive_data())?;
             self = new_self;
@@ -495,6 +497,15 @@ fn server(handle: Handle, server_root: PathBuf) -> io::Result<()> {
         println!("Waiting another client...");
     }
     Ok(())
+}
+
+fn invalid_path(path: &Path) -> bool {
+    for component in path.components() {
+        if let Component::ParentDir = component {
+            return true;
+        }
+    }
+    false
 }
 
 fn main() {
