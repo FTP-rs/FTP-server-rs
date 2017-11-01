@@ -169,7 +169,7 @@ impl Client {
                     self = await!(self.send(Answer::new(ResultCode::InvalidParameterOrArgument, "Invalid username")))?;
                 } else {
                     self.name = Some(content.to_owned());
-                    self = await!(self.send(Answer::new(ResultCode::UserloggedIn, &format!("Welcome {}!", content))))?;
+                    self = await!(self.send(Answer::new(ResultCode::UserLoggedIn, &format!("Welcome {}!", content))))?;
                 }
             }
             Command::CdUp => {

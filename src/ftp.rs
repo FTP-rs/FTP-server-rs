@@ -32,7 +32,7 @@ pub enum ResultCode {
     DataConnectionOpen = 225,
     ClosingDataConnection = 226,
     EnteringPassiveMode = 227,
-    UserloggedIn = 230,
+    UserLoggedIn = 230,
     RequestedFileActionOkay = 250,
     PATHNAMECreated = 257,
     UserNameOkayNeedPassword = 331,
