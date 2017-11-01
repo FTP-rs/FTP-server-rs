@@ -466,7 +466,7 @@ impl Client {
 #[async]
 fn handle_client(stream: TcpStream, handle: Handle, server_root: PathBuf) -> result::Result<(), ()> {
     await!(client(stream, handle, server_root))
-        .map_err(|_| ())
+        .map_err(|error| println!("Error handling client: {}", error))
 }
 
 #[async]
@@ -514,7 +514,9 @@ fn main() {
 
     match env::current_dir() {
         Ok(server_root) => {
-            core.run(server(handle, server_root)).expect("Run tokio server");
+            if let Err(error) = core.run(server(handle, server_root)) {
+                println!("Error running the server: {}", error);
+            }
         }
         Err(e) => println!("Couldn't start server: {:?}", e),
     }

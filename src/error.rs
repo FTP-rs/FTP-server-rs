@@ -1,3 +1,4 @@
+use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::result;
 use std::str::Utf8Error;
@@ -17,6 +18,17 @@ impl Error {
         match self {
             Io(error) => error,
             FromUtf8(_) | Msg(_) | Utf8(_) => io::ErrorKind::Other.into(),
+        }
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        match *self {
+            FromUtf8(ref error) => error.fmt(formatter),
+            Io(ref error) => error.fmt(formatter),
+            Utf8(ref error) => error.fmt(formatter),
+            Msg(ref msg) => write!(formatter, "{}", msg),
         }
     }
 }
