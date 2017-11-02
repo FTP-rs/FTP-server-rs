@@ -1,3 +1,4 @@
+use std::error;
 use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::result;
@@ -6,6 +7,7 @@ use std::string::FromUtf8Error;
 
 use self::Error::*;
 
+#[derive(Debug)]
 pub enum Error {
     FromUtf8(FromUtf8Error),
     Io(io::Error),
@@ -30,6 +32,28 @@ impl Display for Error {
             Utf8(ref error) => error.fmt(formatter),
             Msg(ref msg) => write!(formatter, "{}", msg),
         }
+    }
+}
+
+impl error::Error for Error {
+    fn description(&self) -> &str {
+        match *self {
+            FromUtf8(ref error) => error.description(),
+            Io(ref error) => error.description(),
+            Utf8(ref error) => error.description(),
+            Msg(ref msg) => msg,
+        }
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        let cause: &error::Error =
+            match *self {
+                FromUtf8(ref error) => error,
+                Io(ref error) => error,
+                Utf8(ref error) => error,
+                Msg(_) => return None,
+            };
+        Some(cause)
     }
 }
 
