@@ -3,8 +3,6 @@
 /*
  * FIXME: Filezilla says: Le serveur ne supporte pas les caractères non-ASCII.
  * FIXME: ftp cli says "WARNING! 71 bare linefeeds received in ASCII mode" when retrieving a file.
- * TODO: LIST does not send all the data in the right order (FileZilla shows the file size in the
- * permission column).
  */
 
 #![feature(proc_macro, conservative_impl_trait, generators)]
