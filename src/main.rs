@@ -210,27 +210,17 @@ impl Client {
         (self, dir)
     }
 
-    fn get_parent(self, path: PathBuf) -> (Self, Option<PathBuf>) {
-        (self, path.parent().map(|p| p.to_path_buf()))
-    }
-
-    fn get_filename(self, path: PathBuf) -> (Self, Option<OsString>) {
-        (self, path.file_name().map(|p| p.to_os_string()))
-    }
-
     #[async]
     fn mkd(mut self, path: PathBuf) -> Result<Self> {
         let path = self.cwd.join(&path);
-        let (new_self, parent) = self.get_parent(path.clone());
-        self = new_self;
+        let parent = get_parent(path.clone());
         if let Some(parent) = parent {
             let parent = parent.to_path_buf();
             let (new_self, res) = self.complete_path(parent);
             self = new_self;
             if let Ok(mut dir) = res {
                 if dir.is_dir() {
-                    let (new_self, filename) = self.get_filename(path);
-                    self = new_self;
+                    let filename = get_filename(path);
                     if let Some(filename) = filename {
                         dir.push(filename);
                         if create_dir(dir).is_ok() {
@@ -506,6 +496,14 @@ fn invalid_path(path: &Path) -> bool {
         }
     }
     false
+}
+
+fn get_parent(path: PathBuf) -> Option<PathBuf> {
+    path.parent().map(|p| p.to_path_buf())
+}
+
+fn get_filename(path: PathBuf) -> Option<OsString> {
+    path.file_name().map(|p| p.to_os_string())
 }
 
 fn main() {
