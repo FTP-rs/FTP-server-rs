@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 
 use bytes::BytesMut;
 use tokio_io::codec::{Decoder, Encoder};
@@ -32,14 +32,13 @@ impl Encoder for FtpCodec {
     type Error = io::Error;
 
     fn encode(&mut self, answer: Answer, buf: &mut BytesMut) -> io::Result<()> {
-        // TODO: avoid using String?
-        let answer =
-            if answer.message.is_empty() {
-                format!("{}\r\n", answer.code as u32)
-            } else {
-                format!("{} {}\r\n", answer.code as u32, answer.message)
-            };
-        buf.extend(answer.as_bytes());
+        let mut buffer = vec![];
+        if answer.message.is_empty() {
+            write!(buffer, "{}\r\n", answer.code as u32)?;
+        } else {
+            write!(buffer, "{} {}\r\n", answer.code as u32, answer.message)?;
+        }
+        buf.extend(&buffer);
         Ok(())
     }
 }
