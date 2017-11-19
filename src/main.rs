@@ -147,7 +147,7 @@ impl Client {
             Command::Pwd => {
                 let msg = format!("{}", self.cwd.to_str().unwrap_or("")); // small trick
                 if !msg.is_empty() {
-                    let message = format!("\"/{}\" ", msg);
+                    let message = format!("\"{}\" ", msg);
                     self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated, &message)))?;
                 } else {
                     self = await!(self.send(Answer::new(ResultCode::FileNotFound, "No such file or directory")))?;
@@ -174,6 +174,7 @@ impl Client {
             Command::CdUp => {
                 if let Some(path) = self.cwd.parent().map(Path::to_path_buf) {
                     self.cwd = path;
+                    prefix_slash(&mut self.cwd);
                 }
                 self = await!(self.send(Answer::new(ResultCode::Ok, "Done")))?;
             }
@@ -267,7 +268,8 @@ impl Client {
             self = new_self;
             if let Ok(prefix) = res {
                 self.cwd = prefix.to_path_buf();
-                self = await!(self.send(Answer::new(ResultCode::Ok,
+                prefix_slash(&mut self.cwd);
+                self = await!(self.send(Answer::new(ResultCode::RequestedFileActionOkay,
                                                     &format!("Directory changed to \"{}\"", directory.display()))))?;
                 return Ok(self)
             }
@@ -502,6 +504,12 @@ fn get_parent(path: PathBuf) -> Option<PathBuf> {
 
 fn get_filename(path: PathBuf) -> Option<OsString> {
     path.file_name().map(|p| p.to_os_string())
+}
+
+fn prefix_slash(path: &mut PathBuf) {
+    if !path.is_absolute() {
+        *path = Path::new("/").join(&path);
+    }
 }
 
 fn main() {

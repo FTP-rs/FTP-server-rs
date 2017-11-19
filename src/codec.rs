@@ -92,8 +92,8 @@ mod tests {
         let answer = Answer::new(ResultCode::CantOpenDataConnection, "");
         let mut buf = BytesMut::new();
         let result = codec.encode(answer, &mut buf);
-        assert!(result.is_ok());
-        assert_eq!(buf, format!("425\r\n"));
+        assert!(result.is_ok(), "Result is ok");
+        assert_eq!(buf, format!("425\r\n"), "Buffer contains 425");
     }
 
     #[test]
