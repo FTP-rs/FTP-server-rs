@@ -82,8 +82,13 @@ impl Command {
                 b"STOR" => Command::Stor(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
                 b"SYST" => Command::Syst,
                 b"TYPE" => {
-                    match TransferType::from(data?[0]) {
-                        TransferType::Unknown => return Err("command not implemented for that parameter".into()),
+                    let error = Err("command not implemented for that parameter".into());
+                    let data = data?;
+                    if data.is_empty() {
+                        return error;
+                    }
+                    match TransferType::from(data[0]) {
+                        TransferType::Unknown => return error,
                         typ => {
                             Command::Type(typ)
                         },
