@@ -1,36 +1,43 @@
 extern crate ftp;
 
-use std::process::Command;
+use std::process::{Child, Command};
 use std::thread;
 use std::time::Duration;
 
 use ftp::FtpStream;
 
-struct Teardown<F: FnMut()> {
-    callback: F,
+struct ProcessController {
+    child: Child,
 }
 
-impl<F: FnMut()> Drop for Teardown<F> {
-    fn drop(&mut self) {
-        (self.callback)();
+impl ProcessController {
+    fn new(child: Child) -> Self {
+        ProcessController {
+            child,
+        }
+    }
+
+    fn is_running(&mut self) -> bool {
+        let status = self.child.try_wait().unwrap();
+        status.is_none()
     }
 }
 
-fn defer<F: FnMut()>(callback: F) -> Teardown<F> {
-    Teardown {
-        callback,
+impl Drop for ProcessController {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
     }
 }
 
 #[test]
 fn test_pwd() {
-    let mut child = Command::new("./target/debug/ftp-server")
-        .spawn().unwrap();
-    let _teardown = defer(move || {
-        let _ = child.kill();
-    });
+    let child =
+        Command::new("./target/debug/ftp-server")
+            .spawn().unwrap();
+    let mut controller = ProcessController::new(child);
 
     thread::sleep(Duration::from_millis(100));
+    assert!(controller.is_running(), "Server was aborted");
 
     let mut ftp = FtpStream::connect("127.0.0.1:1234").unwrap();
 
