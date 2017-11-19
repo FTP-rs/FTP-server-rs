@@ -3,7 +3,7 @@ use std::str::{self, FromStr};
 
 use error::{Error, Result};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Auth,
     Cwd(PathBuf),
@@ -108,7 +108,7 @@ fn to_uppercase(data: &mut [u8]) {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TransferType {
     Ascii,
     Image,

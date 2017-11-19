@@ -71,3 +71,52 @@ fn find_crlf(buf: &mut BytesMut) -> Option<usize> {
     buf.windows(2)
         .position(|bytes| bytes == b"\r\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ftp::ResultCode;
+    use super::{Answer, BytesMut, Command, Decoder, Encoder, FtpCodec};
+
+    #[test]
+    fn test_encoder() {
+        let mut codec = FtpCodec;
+        let message = "bad sequence of commands";
+        let answer = Answer::new(ResultCode::BadSequenceOfCommands, message);
+        let mut buf = BytesMut::new();
+        let result = codec.encode(answer, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(buf, format!("503 {}\r\n", message));
+
+        let answer = Answer::new(ResultCode::CantOpenDataConnection, "");
+        let mut buf = BytesMut::new();
+        let result = codec.encode(answer, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(buf, format!("425\r\n"));
+    }
+
+    #[test]
+    fn test_decoder() {
+        let mut codec = FtpCodec;
+        let mut buf = BytesMut::new();
+        buf.extend(b"PWD");
+        let result = codec.decode(&mut buf);
+        assert!(result.is_ok());
+        let command = result.unwrap();
+        assert!(command.is_none());
+
+        buf.extend(b"\r\n");
+        let result = codec.decode(&mut buf);
+        assert!(result.is_ok());
+        let command = result.unwrap();
+        assert_eq!(command, Some(Command::Pwd));
+
+        let mut buf = BytesMut::new();
+        buf.extend(b"LIST /tmp\r\n");
+        let result = codec.decode(&mut buf);
+        assert!(result.is_ok());
+        let command = result.unwrap();
+        assert_eq!(command, Some(Command::List(Some(PathBuf::from("/tmp")))));
+    }
+}
