@@ -1,3 +1,5 @@
+//! FTP codecs to encode and decode FTP commands and raw bytes.
+
 use std::io::{self, Write};
 
 use bytes::BytesMut;
