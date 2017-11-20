@@ -3,22 +3,36 @@ use std::str::{self, FromStr};
 
 use error::{Error, Result};
 
+/// An FTP command parsed by the parser.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Auth,
+    /// Change the working directory to the one specified as an argument.
     Cwd(PathBuf),
+    /// Get a list of files.
     List(Option<PathBuf>),
+    /// Create a new directory.
     Mkd(PathBuf),
+    /// No operation.
     NoOp,
+    /// Specify the port to use for the data channel.
     Port(u16),
+    /// Enter passive mode.
     Pasv,
+    /// Print current directory.
     Pwd,
+    /// Terminate the connection.
     Quit,
+    /// Retrieve a file.
     Retr(PathBuf),
+    /// Remove a directory.
     Rmd(PathBuf),
+    /// Store a file on the server.
     Stor(PathBuf),
     Syst,
+    /// Specify the transfert type.
     Type(TransferType),
+    /// Go to the parent directory.
     CdUp,
     Unknown(String),
     User(String),
@@ -105,6 +119,14 @@ impl Command {
     }
 }
 
+/// Convert a sequence to bytes to uppercase.
+///
+/// # Examples
+///
+/// ```
+/// let mut data = b"test";
+/// to_uppercase(&mut data);
+/// ```
 fn to_uppercase(data: &mut [u8]) {
     for byte in data {
         if *byte >= 'a' as u8 && *byte <= 'z' as u8 {

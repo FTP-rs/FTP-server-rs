@@ -5,7 +5,10 @@
  * FIXME: ftp cli says "WARNING! 71 bare linefeeds received in ASCII mode" when retrieving a file.
  */
 
+//! An FTP server, written using tokio and futures-await.
+
 #![feature(proc_macro, conservative_impl_trait, generators)]
+#![warn(missing_docs)]
 
 extern crate bytes;
 #[macro_use]
