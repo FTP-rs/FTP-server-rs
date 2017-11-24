@@ -11,6 +11,7 @@ pub enum Command {
     Mkd(PathBuf),
     NoOp,
     Port(u16),
+    Pass(String),
     Pasv,
     Pwd,
     Quit,
@@ -30,6 +31,7 @@ impl AsRef<str> for Command {
             Command::Auth => "AUTH",
             Command::Cwd(_) => "CWD",
             Command::List(_) => "LIST",
+            Command::Pass(_) => "PASS",
             Command::Pasv => "PASV",
             Command::Port(_) => "PORT",
             Command::Pwd => "PWD",
@@ -98,6 +100,7 @@ impl Command {
                 b"MKD" => Command::Mkd(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
                 b"RMD" => Command::Rmd(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
                 b"USER" => Command::User(data.and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(Into::into))?),
+                b"PASS" => Command::User(data.and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(Into::into))?),
                 b"NOOP" => Command::NoOp,
                 s => Command::Unknown(str::from_utf8(s).unwrap_or("").to_owned()),
             };

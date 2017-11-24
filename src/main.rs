@@ -15,10 +15,16 @@ extern crate time;
 extern crate tokio_core;
 extern crate tokio_io;
 
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate toml;
+
 mod cmd; // FIXME: rename this module.
 mod codec;
 mod error;
 mod ftp;
+mod config;
 
 use std::env;
 use std::ffi::OsString;
@@ -38,9 +44,12 @@ use tokio_io::codec::Framed;
 
 use cmd::{Command, TransferType};
 use codec::{BytesCodec, FtpCodec};
+use config::{DEFAULT_PORT, Config};
 use error::{Error, Result};
 use ftp::{Answer, ResultCode};
 
+const FULL_CONFIG_FILE_PATH: &'static str = "/config.toml";
+const CONFIG_FILE: &'static str = "config.toml";
 const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -63,7 +72,7 @@ cfg_if! {
 }
 
 // If an error occurs when we try to get file's information, we just return and don't send its info.
-fn add_file_info(path: PathBuf, out: &mut Vec<u8>) {
+fn add_file_info(path: PathBuf, out: &mut Vec<u8>, is_admin: bool) {
     let extra = if path.is_dir() { "/" } else { "" };
     let is_dir = if path.is_dir() { "d" } else { "-" };
 
@@ -79,6 +88,10 @@ fn add_file_info(path: PathBuf, out: &mut Vec<u8>) {
         },
         _ => return,
     };
+    // Only admin user can see this.
+    if is_admin == false && path == FULL_CONFIG_FILE_PATH {
+        return;
+    }
     // TODO: maybe improve how we get rights in here?
     let rights = if meta.permissions().readonly() {
         "r--r--r--"
@@ -113,10 +126,13 @@ struct Client {
     server_root: PathBuf,
     transfer_type: TransferType,
     writer: Writer,
+    is_admin: bool,
+    config: Config,
+    waiting_password: bool,
 }
 
 impl Client {
-    fn new(handle: Handle, writer: Writer, server_root: PathBuf) -> Client {
+    fn new(handle: Handle, writer: Writer, server_root: PathBuf, config: Config) -> Client {
         Client {
             cwd: PathBuf::from("/"),
             data_port: None,
@@ -127,7 +143,14 @@ impl Client {
             server_root,
             transfer_type: TransferType::Ascii,
             writer,
+            is_admin: false,
+            config,
+            waiting_password: false,
         }
+    }
+
+    fn is_logged(&self) -> bool {
+        self.name.is_some() && self.waiting_password == false
     }
 
     #[async]
@@ -135,56 +158,126 @@ impl Client {
         println!("Received command: {:?}", cmd);
         match cmd {
             Command::Auth =>
-                self = await!(self.send(Answer::new(ResultCode::CommandNotImplemented, "Not implemented")))?
+                self = await!(self.send(Answer::new(ResultCode::CommandNotImplemented,
+                                                    "Not implemented")))?
             ,
-            Command::Cwd(directory) => self = await!(self.cwd(directory))?,
-            Command::List(path) => self = await!(self.list(path))?,
-            Command::Pasv => self = await!(self.pasv())?,
-            Command::Port(port) => {
+            Command::Cwd(directory) if self.is_logged() => self = await!(self.cwd(directory))?,
+            Command::List(path) if self.is_logged() => self = await!(self.list(path))?,
+            Command::Pasv if self.is_logged() => self = await!(self.pasv())?,
+            Command::Port(port) if self.is_logged() => {
                 self.data_port = Some(port);
-                self = await!(self.send(Answer::new(ResultCode::Ok, &format!("Data port is now {}", port))))?;
+                self = await!(self.send(Answer::new(ResultCode::Ok,
+                                                    &format!("Data port is now {}", port))))?;
             }
-            Command::Pwd => {
+            Command::Pwd if self.is_logged() => {
                 let msg = format!("{}", self.cwd.to_str().unwrap_or("")); // small trick
                 if !msg.is_empty() {
                     let message = format!("\"{}\" ", msg);
                     self = await!(self.send(Answer::new(ResultCode::PATHNAMECreated, &message)))?;
                 } else {
-                    self = await!(self.send(Answer::new(ResultCode::FileNotFound, "No such file or directory")))?;
+                    self = await!(self.send(Answer::new(ResultCode::FileNotFound,
+                                                        "No such file or directory")))?;
                 }
             }
             Command::Quit => self = await!(self.quit())?,
-            Command::Retr(file) => self = await!(self.retr(file))?,
-            Command::Stor(file) => self = await!(self.stor(file))?,
+            Command::Retr(file) if self.is_logged() => self = await!(self.retr(file))?,
+            Command::Stor(file) if self.is_logged() => self = await!(self.stor(file))?,
             Command::Syst => {
                 self = await!(self.send(Answer::new(ResultCode::Ok, "I won't tell!")))?;
             }
             Command::Type(typ) => {
                 self.transfer_type = typ;
-                self = await!(self.send(Answer::new(ResultCode::Ok, "Transfer type changed successfully")))?;
+                self = await!(self.send(Answer::new(ResultCode::Ok,
+                                                    "Transfer type changed successfully")))?;
             }
             Command::User(content) => {
                 if content.is_empty() {
-                    self = await!(self.send(Answer::new(ResultCode::InvalidParameterOrArgument, "Invalid username")))?;
+                    self = await!(self.send(Answer::new(ResultCode::InvalidParameterOrArgument,
+                                                        "Invalid username")))?;
                 } else {
-                    self.name = Some(content.to_owned());
-                    self = await!(self.send(Answer::new(ResultCode::UserLoggedIn, &format!("Welcome {}!", content))))?;
+                    let mut name = None;
+                    let mut pass_required = true;
+                    
+                    self.is_admin = false;
+                    if let Some(admin) = self.config.admin {
+                        if admin.name == content {
+                            name = Some(content);
+                            pass_required = admin.password.is_empty() == false;
+                            self.is_admin = true;
+                        }
+                    }
+                    if name.is_none() {
+                        for user in self.config.users {
+                            if user.name == content {
+                                name = Some(content);
+                                pass_required = user.password.is_empty() == false;
+                                break;
+                            }
+                        }
+                    }
+                    if name.is_none() {
+                        self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
+                                                "Unknown user...")))?;
+                    } else {
+                        self.name = name;
+                        if pass_required {
+                            self.waiting_password = true;
+                            self = await!(
+                                self.send(Answer::new(ResultCode::UserNameOkayNeedPassword,
+                                          "Login OK, password needed")))?;
+                        } else {
+                            self.waiting_password = false;
+                            self = await!(self.send(Answer::new(ResultCode::UserLoggedIn,
+                                                    &format!("Welcome {}!", content))))?;
+                        }
+                    }
                 }
             }
-            Command::CdUp => {
+            Command::Pass(content) if self.name.is_some() && self.waiting_password => {
+                let mut ok = false;
+                if self.is_admin {
+                    ok = content == self.config.admin.unwrap().password;
+                } else {
+                    for user in self.config.users {
+                        if Some(user.name) == self.name {
+                            if user.password == content {
+                                ok = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if ok {
+                    self.waiting_password = false;
+                    self = await!(
+                        self.send(Answer::new(ResultCode::UserLoggedIn,
+                                              &format!("Welcome {}",
+                                                       self.name.unwrap_or(String::new())))))?;
+                } else {
+                    self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
+                                                        "Invalid password")))?;
+                }
+            }
+            Command::CdUp if self.is_logged() => {
                 if let Some(path) = self.cwd.parent().map(Path::to_path_buf) {
                     self.cwd = path;
                     prefix_slash(&mut self.cwd);
                 }
                 self = await!(self.send(Answer::new(ResultCode::Ok, "Done")))?;
             }
-            Command::Mkd(path) => self = await!(self.mkd(path))?,
-            Command::Rmd(path) => self = await!(self.rmd(path))?,
-            Command::NoOp => self = await!(self.send(Answer::new(ResultCode::Ok, "Doing nothing")))?,
+            Command::Mkd(path) if self.is_logged() => self = await!(self.mkd(path))?,
+            Command::Rmd(path) if self.is_logged() => self = await!(self.rmd(path))?,
+            Command::NoOp => self = await!(self.send(Answer::new(ResultCode::Ok,
+                                                                 "Doing nothing")))?,
             Command::Unknown(s) =>
                 self = await!(self.send(Answer::new(ResultCode::UnknownCommand,
                                                     &format!("\"{}\": Not implemented", s))))?
             ,
+            _ => {
+                // It means that the user tried to send a command while they weren't logged yet.
+                self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
+                                                    "Please log first")))?;
+            }
         }
         Ok(self)
     }
@@ -270,7 +363,8 @@ impl Client {
                 self.cwd = prefix.to_path_buf();
                 prefix_slash(&mut self.cwd);
                 self = await!(self.send(Answer::new(ResultCode::RequestedFileActionOkay,
-                                                    &format!("Directory changed to \"{}\"", directory.display()))))?;
+                                                    &format!("Directory changed to \"{}\"",
+                                                             directory.display()))))?;
                 return Ok(self)
             }
         }
@@ -294,7 +388,7 @@ impl Client {
                     if let Ok(dir) = read_dir(path) {
                         for entry in dir {
                             if let Ok(entry) = entry {
-                                add_file_info(entry.path(), &mut out);
+                                add_file_info(entry.path(), &mut out, self.is_admin);
                             }
                         }
                     } else {
@@ -303,7 +397,7 @@ impl Client {
                         return Ok(self);
                     }
                 } else {
-                    add_file_info(path, &mut out);
+                    add_file_info(path, &mut out, self.is_admin);
                 }
                 self = await!(self.send_data(out))?;
                 println!("-> and done!");
@@ -312,11 +406,13 @@ impl Client {
                                                     "No such file or directory")))?;
             }
         } else {
-            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
+            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed,
+                                                "No opened data connection")))?;
         }
         if self.data_writer.is_some() {
             self.close_data_connection();
-            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
+            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection,
+                                                "Transfer done")))?;
         }
         Ok(self)
     }
@@ -454,16 +550,17 @@ impl Client {
 }
 
 #[async]
-fn handle_client(stream: TcpStream, handle: Handle, server_root: PathBuf) -> result::Result<(), ()> {
-    await!(client(stream, handle, server_root))
+fn handle_client(stream: TcpStream, handle: Handle, server_root: PathBuf,
+                 config: Config) -> result::Result<(), ()> {
+    await!(client(stream, handle, server_root, config))
         .map_err(|error| println!("Error handling client: {}", error))
 }
 
 #[async]
-fn client(stream: TcpStream, handle: Handle, server_root: PathBuf) -> Result<()> {
+fn client(stream: TcpStream, handle: Handle, server_root: PathBuf, config: Config) -> Result<()> {
     let (writer, reader) = stream.framed(FtpCodec).split();
     let writer = await!(writer.send(Answer::new(ResultCode::ServiceReadyForNewUser, "Welcome to this FTP server!")))?;
-    let mut client = Client::new(handle, writer, server_root);
+    let mut client = Client::new(handle, writer, server_root, config);
     #[async]
     for cmd in reader {
         client = await!(client.handle_cmd(cmd))?;
@@ -473,9 +570,13 @@ fn client(stream: TcpStream, handle: Handle, server_root: PathBuf) -> Result<()>
 }
 
 #[async]
-fn server(handle: Handle, server_root: PathBuf) -> io::Result<()> {
-    let port = 1234;
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
+fn server(handle: Handle, server_root: PathBuf, config: Config) -> io::Result<()> {
+    let port = config.server_port.unwrap_or(DEFAULT_PORT);
+    let addr = SocketAddr::new(IpAddr::V4(config.server_addr
+                                                .unwrap_or("127.0.0.1".to_owned())
+                                                .parse()
+                                                .expect("Invalid IpV4 address...")),
+                               port);
     let listener = TcpListener::bind(&addr, &handle)?;
 
     println!("Waiting clients on port {}...", port);
@@ -483,7 +584,7 @@ fn server(handle: Handle, server_root: PathBuf) -> io::Result<()> {
     for (stream, addr) in listener.incoming() {
         let address = format!("[address : {}]", addr);
         println!("New client: {}", address);
-        handle.spawn(handle_client(stream, handle.clone(), server_root.clone()));
+        handle.spawn(handle_client(stream, handle.clone(), server_root.clone(), config.clone()));
         println!("Waiting another client...");
     }
     Ok(())
@@ -513,12 +614,13 @@ fn prefix_slash(path: &mut PathBuf) {
 }
 
 fn main() {
+    let config = Config::new(CONFIG_FILE).expect("Error while loading config...");
     let mut core = Core::new().expect("Cannot create tokio Core");
     let handle = core.handle();
 
     match env::current_dir() {
         Ok(server_root) => {
-            if let Err(error) = core.run(server(handle, server_root)) {
+            if let Err(error) = core.run(server(handle, server_root, config)) {
                 println!("Error running the server: {}", error);
             }
         }
