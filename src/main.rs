@@ -48,7 +48,6 @@ use config::{DEFAULT_PORT, Config};
 use error::{Error, Result};
 use ftp::{Answer, ResultCode};
 
-const FULL_CONFIG_FILE_PATH: &'static str = "/config.toml";
 const CONFIG_FILE: &'static str = "config.toml";
 const MONTHS: [&'static str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -72,7 +71,7 @@ cfg_if! {
 }
 
 // If an error occurs when we try to get file's information, we just return and don't send its info.
-fn add_file_info(path: PathBuf, out: &mut Vec<u8>, is_admin: bool) {
+fn add_file_info(path: PathBuf, out: &mut Vec<u8>) {
     let extra = if path.is_dir() { "/" } else { "" };
     let is_dir = if path.is_dir() { "d" } else { "-" };
 
@@ -88,10 +87,6 @@ fn add_file_info(path: PathBuf, out: &mut Vec<u8>, is_admin: bool) {
         },
         _ => return,
     };
-    // Only admin user can see this.
-    if is_admin == false && path == FULL_CONFIG_FILE_PATH {
-        return;
-    }
     // TODO: maybe improve how we get rights in here?
     let rights = if meta.permissions().readonly() {
         "r--r--r--"
@@ -170,10 +165,11 @@ impl Client {
                     let msg = format!("{}", self.cwd.to_str().unwrap_or("")); // small trick
                     if !msg.is_empty() {
                         let message = format!("\"{}\" ", msg);
-                        return Ok(await!(self.send(Answer::new(ResultCode::PATHNAMECreated, &message)))?);
+                        return Ok(await!(self.send(Answer::new(ResultCode::PATHNAMECreated,
+                                                               &message)))?);
                     } else {
                         return Ok(await!(self.send(Answer::new(ResultCode::FileNotFound,
-                                                            "No such file or directory")))?);
+                                                               "No such file or directory")))?);
                     }
                 }
                 Command::Retr(file) => return Ok(await!(self.retr(file))?),
@@ -220,8 +216,7 @@ impl Client {
         match cmd {
             Command::Auth =>
                 self = await!(self.send(Answer::new(ResultCode::CommandNotImplemented,
-                                                    "Not implemented")))?
-            ,
+                                                    "Not implemented")))?,
             Command::Quit => self = await!(self.quit())?,
             Command::Syst => {
                 self = await!(self.send(Answer::new(ResultCode::Ok, "I won't tell!")))?;
@@ -260,12 +255,13 @@ impl Client {
                         self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
                                                 "Unknown user...")))?;
                     } else {
-                        self.name = name;
+                        self.name = name.clone();
                         if pass_required {
                             self.waiting_password = true;
                             self = await!(
                                 self.send(Answer::new(ResultCode::UserNameOkayNeedPassword,
-                                          "Login OK, password needed")))?;
+                                          &format!("Login OK, password needed for {}",
+                                                   name.unwrap()))))?;
                         } else {
                             self.waiting_password = false;
                             self = await!(self.send(Answer::new(ResultCode::UserLoggedIn,
@@ -278,8 +274,7 @@ impl Client {
                                                                  "Doing nothing")))?,
             Command::Unknown(s) =>
                 self = await!(self.send(Answer::new(ResultCode::UnknownCommand,
-                                                    &format!("\"{}\": Not implemented", s))))?
-            ,
+                                                    &format!("\"{}\": Not implemented", s))))?,
             _ => {
                 // It means that the user tried to send a command while they weren't logged yet.
                 self = await!(self.send(Answer::new(ResultCode::NotLoggedIn,
@@ -395,7 +390,10 @@ impl Client {
                     if let Ok(dir) = read_dir(path) {
                         for entry in dir {
                             if let Ok(entry) = entry {
-                                add_file_info(entry.path(), &mut out, self.is_admin);
+                                if self.is_admin ||
+                                   entry.path() != self.server_root.join(CONFIG_FILE) {
+                                    add_file_info(entry.path(), &mut out);
+                                }
                             }
                         }
                     } else {
@@ -403,8 +401,8 @@ impl Client {
                                                             "No such file or directory")))?;
                         return Ok(self);
                     }
-                } else {
-                    add_file_info(path, &mut out, self.is_admin);
+                } else if self.is_admin || path != self.server_root.join(CONFIG_FILE) {
+                    add_file_info(path, &mut out);
                 }
                 self = await!(self.send_data(out))?;
                 println!("-> and done!");
@@ -433,7 +431,8 @@ impl Client {
                 0
             };
         if self.data_writer.is_some() {
-            self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Already listening...")))?;
+            self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
+                                                "Already listening...")))?;
             return Ok(self);
         }
 
@@ -461,7 +460,8 @@ impl Client {
         if self.data_writer.is_some() {
             unimplemented!();
         } else {
-            self = await!(self.send(Answer::new(ResultCode::ServiceClosingControlConnection, "Closing connection...")))?;
+            self = await!(self.send(Answer::new(ResultCode::ServiceClosingControlConnection,
+                                                "Closing connection...")))?;
             self.writer.close()?;
         }
         Ok(self)
@@ -475,8 +475,9 @@ impl Client {
             let (new_self, res) = self.complete_path(path.clone()); // TODO: ugly clone
             self = new_self;
             if let Ok(path) = res {
-                if path.is_file() {
-                    self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
+                if path.is_file() && (self.is_admin || path != self.server_root.join(CONFIG_FILE)) {
+                    self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
+                                                        "Starting to send file...")))?;
                     let mut file = File::open(path)?;
                     let mut out = vec![];
                     // TODO: send the file chunck by chunck if it is big (if needed).
@@ -486,19 +487,23 @@ impl Client {
                 } else {
                     self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
                                       &format!("\"{}\" doesn't exist", path.to_str()
-                                               .ok_or_else(|| Error::Msg("No path".to_string()))?))))?;
+                                               .ok_or_else(||
+                                                   Error::Msg("No path".to_string()))?))))?;
                 }
             } else {
                 self = await!(self.send(Answer::new(ResultCode::LocalErrorInProcessing,
                                       &format!("\"{}\" doesn't exist", path.to_str()
-                                               .ok_or_else(|| Error::Msg("No path".to_string()))?))))?;
+                                               .ok_or_else(||
+                                                   Error::Msg("No path".to_string()))?))))?;
             }
         } else {
-            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
+            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed,
+                                                "No opened data connection")))?;
         }
         if self.data_writer.is_some() {
             self.close_data_connection();
-            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
+            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection,
+                                                "Transfer done")))?;
         }
         Ok(self)
     }
@@ -506,21 +511,25 @@ impl Client {
     #[async]
     fn stor(mut self, path: PathBuf) -> Result<Self> {
         if self.data_reader.is_some() {
-            if invalid_path(&path) {
+            if invalid_path(&path) ||
+               (!self.is_admin && path == self.server_root.join(CONFIG_FILE)) {
                 let error: io::Error = io::ErrorKind::PermissionDenied.into();
                 return Err(error.into());
             }
             let path = self.cwd.join(path);
-            self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen, "Starting to send file...")))?;
+            self = await!(self.send(Answer::new(ResultCode::DataConnectionAlreadyOpen,
+                                                "Starting to send file...")))?;
             let (data, new_self) = await!(self.receive_data())?;
             self = new_self;
             let mut file = File::create(path)?;
             file.write_all(&data)?;
             println!("-> file transfer done!");
             self.close_data_connection();
-            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection, "Transfer done")))?;
+            self = await!(self.send(Answer::new(ResultCode::ClosingDataConnection,
+                                                "Transfer done")))?;
         } else {
-            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed, "No opened data connection")))?;
+            self = await!(self.send(Answer::new(ResultCode::ConnectionClosed,
+                                                "No opened data connection")))?;
         }
         Ok(self)
     }
@@ -533,7 +542,8 @@ impl Client {
         if self.data_reader.is_none() {
             return Ok((vec![], self));
         }
-        let reader = self.data_reader.take().ok_or_else(|| Error::Msg("No data reader".to_string()))?;
+        let reader = self.data_reader.take()
+                                     .ok_or_else(|| Error::Msg("No data reader".to_string()))?;
         #[async]
         for data in reader {
             file_data.extend(&data);
@@ -566,7 +576,8 @@ fn handle_client(stream: TcpStream, handle: Handle, server_root: PathBuf,
 #[async]
 fn client(stream: TcpStream, handle: Handle, server_root: PathBuf, config: Config) -> Result<()> {
     let (writer, reader) = stream.framed(FtpCodec).split();
-    let writer = await!(writer.send(Answer::new(ResultCode::ServiceReadyForNewUser, "Welcome to this FTP server!")))?;
+    let writer = await!(writer.send(Answer::new(ResultCode::ServiceReadyForNewUser,
+                                    "Welcome to this FTP server!")))?;
     let mut client = Client::new(handle, writer, server_root, config);
     #[async]
     for cmd in reader {

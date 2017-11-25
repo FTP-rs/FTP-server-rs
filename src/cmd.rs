@@ -77,7 +77,7 @@ impl Command {
                         return Err("Port can't be less than 10025".into());
                     }
                     Command::Port(port)
-                },
+                }
                 b"PWD" => Command::Pwd,
                 b"QUIT" => Command::Quit,
                 b"RETR" => Command::Retr(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
@@ -100,7 +100,7 @@ impl Command {
                 b"MKD" => Command::Mkd(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
                 b"RMD" => Command::Rmd(data.and_then(|bytes| Ok(Path::new(str::from_utf8(bytes)?).to_path_buf()))?),
                 b"USER" => Command::User(data.and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(Into::into))?),
-                b"PASS" => Command::User(data.and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(Into::into))?),
+                b"PASS" => Command::Pass(data.and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(Into::into))?),
                 b"NOOP" => Command::NoOp,
                 s => Command::Unknown(str::from_utf8(s).unwrap_or("").to_owned()),
             };
