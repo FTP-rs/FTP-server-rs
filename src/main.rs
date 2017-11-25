@@ -60,7 +60,8 @@ cfg_if! {
     if #[cfg(windows)] {
         fn get_file_info(meta: &Metadata) -> (time::Tm, u64) {
             use std::os::windows::prelude::*;
-            (time::at(time::Timespec::new(meta.last_write_time())), meta.file_size())
+            (time::at(time::Timespec::new((meta.last_write_time() / 10_000_000) as i64, 0)),
+                      meta.file_size())
         }
     } else {
         fn get_file_info(meta: &Metadata) -> (time::Tm, u64) {
