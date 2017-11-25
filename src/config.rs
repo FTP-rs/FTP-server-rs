@@ -30,7 +30,7 @@ fn get_content<P: AsRef<Path>>(file_path: P) -> Option<String> {
 
 impl Config {
     pub fn new<P: AsRef<Path>>(file_path: P) -> Option<Config> {
-        if let Some(content) = get_content(file_path) {
+        if let Some(content) = get_content(file_path.as_ref()) {
             toml::from_str(&content).ok()
         } else {
             println!("No config file found so creating a new one in {}",
