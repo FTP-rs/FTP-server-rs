@@ -20,8 +20,7 @@ pub struct User {
     pub password: String,
 }
 
-fn get_content<P: AsRef<Path>>(file_path: P) -> Option<String> {
-    let file_path = file_path.as_ref();
+fn get_content<P: AsRef<Path>>(file_path: &P) -> Option<String> {
     let mut file = File::open(file_path).ok()?;
     let mut content = String::new();
     file.read_to_string(&mut content).ok()?;
@@ -30,7 +29,7 @@ fn get_content<P: AsRef<Path>>(file_path: P) -> Option<String> {
 
 impl Config {
     pub fn new<P: AsRef<Path>>(file_path: P) -> Option<Config> {
-        if let Some(content) = get_content(file_path.as_ref()) {
+        if let Some(content) = get_content(&file_path) {
             toml::from_str(&content).ok()
         } else {
             println!("No config file found so creating a new one in {}",
